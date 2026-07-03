@@ -1,6 +1,6 @@
 # NetX SRE Agent UI
 
-基于 **React + TypeScript + Vite + Tailwind CSS + shadcn/Radix** 的 NetX SRE Agent 前端。界面按 `agent-ui-images/` 和 `agent-admin-images/` 中的 AWS FinOps Agent 风格重做：先进入 Agent 管理控制台，显式创建/打开 AgentSpace 后，再进入聊天、任务、产物和上下文文件工作台。
+基于 **React + TypeScript + Vite + Tailwind CSS + shadcn/Radix** 的 NetX SRE Agent 前端。界面按 `docs/agent-ui-images/` 和 `docs/agent-admin-images/` 中的 AWS FinOps Agent 风格重做：先进入 Agent 管理控制台，显式创建/打开 AgentSpace 后，再进入聊天、任务、产物和上下文文件工作台。
 
 ## 技术栈
 

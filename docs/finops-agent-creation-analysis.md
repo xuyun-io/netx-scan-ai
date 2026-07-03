@@ -1,6 +1,6 @@
 # AWS FinOps Agent 创建流程与权限模型分析
 
-> 来源：`agent-admin-images/` 控制台截图 + 创建完成后的 webapp URL
+> 来源：`docs/agent-admin-images/` 控制台截图 + 创建完成后的 webapp URL
 > 目的：理解 AWS FinOps Agent 从控制台创建到可用状态的完整流程、权限分配方式，以及 AgentSpaceId 的来源，为 NetX all-in-one Agent 设计提供参考
 
 ---

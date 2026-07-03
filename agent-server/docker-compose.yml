@@ -1,0 +1,18 @@
+services:
+  netx-sre-agent:
+    build:
+      context: ..
+      dockerfile: agent-server/Dockerfile
+    image: netx-sre-agent:latest
+    container_name: netx-sre-agent
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/agents:/data/agents
+      - ./skills:/app/skills:ro
+    environment:
+      NETX_HTTP_ADDR: ":8080"
+      NETX_DATA_DIR: "/data/agents"
+      NETX_WEB_DIST: "/app/web/dist"
+      NETX_SKILLS_DIR: "/app/skills"
+      CHAIN287_RPC_URL: "${CHAIN287_RPC_URL:-}"

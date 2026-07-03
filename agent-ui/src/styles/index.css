@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  font-family:
+    "Aptos",
+    "Segoe UI",
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  background: #111821;
+  color: #d7dce6;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  overflow: hidden;
+  background: #111821;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: rgba(137, 113, 255, 0.36);
+}
+
+.agent-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #3b4654 transparent;
+}
+
+.agent-scrollbar::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.agent-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.agent-scrollbar::-webkit-scrollbar-thumb {
+  background: #3b4654;
+  border: 2px solid #111821;
+  border-radius: 999px;
+}
+
+.agent-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
+.agent-gradient-title {
+  background: linear-gradient(90deg, #12a8ff 0%, #7473ff 54%, #a537ff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}

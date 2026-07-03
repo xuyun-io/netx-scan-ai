@@ -1,0 +1,11 @@
+version: "1"
+actions:
+  latest_block:
+    description: Query the latest Chain287 block number using Foundry cast.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/cast-query.sh
+    args:
+      - latest_block
+

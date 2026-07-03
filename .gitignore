@@ -1,0 +1,24 @@
+# Runtime data (contains agent configs, credentials, conversation history)
+agent-server/data/
+
+# Dependencies
+agent-ui/node_modules/
+
+# Build outputs
+agent-ui/dist/
+agent-server/web/dist/
+
+# Environment variables and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Logs and temporary files
+*.log
+/tmp/
+tmp/
+
+# IDE
+.vscode/
+.idea/

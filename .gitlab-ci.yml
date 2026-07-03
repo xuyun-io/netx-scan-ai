@@ -3,6 +3,8 @@ variables:
   # 镜像名称
   # 镜像地址和名称
    IMAGE_NAME: "xuyun-io/netx-scan-ai"
+   ENABLE_SECURITY: "false"
+   ONLY_RUN_ON_TAG: "false"
 
 include:
   # 包含 ECR 认证模板 

@@ -1,0 +1,12 @@
+# 全局变量的定义
+variables:
+  # 镜像名称
+  # 镜像地址和名称
+   IMAGE_NAME: "xuyun-io/netx-scan-ai"
+
+include:
+  # 包含 ECR 认证模板 
+  # 写法：项目组/项目名称
+  - project: 'CICD/ci-template'
+    ref: dev # 指定分支
+    file: 'Auto-DevOps.gitlab-ci.yml'

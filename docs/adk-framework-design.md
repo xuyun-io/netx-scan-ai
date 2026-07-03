@@ -210,11 +210,11 @@ netx-ai/
 │   ├── web/                     # 构建后的前端静态文件
 │   │   └── dist/
 │   │
-│   ├── docker-compose.yml
 │   ├── go.mod
 │   └── go.sum
 │
 ├── Dockerfile                   # 单容器多阶段构建
+├── docker-compose.yml           # 容器编排
 └── docs/
     └── architecture.md
 ```

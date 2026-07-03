@@ -99,7 +99,7 @@ curl -X POST http://127.0.0.1:8080/createAgentSpace \
 ```bash
 cd netx-ai
 export CHAIN287_RPC_URL=https://your-chain287-rpc.example
-docker compose -f agent-server/docker-compose.yml up --build
+docker compose up --build
 ```
 
 访问 http://127.0.0.1:8080/

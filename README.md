@@ -28,7 +28,6 @@ npm run dev
 ### Docker 构建运行
 
 ```bash
-cd agent-server
 docker-compose up --build -d
 ```
 

@@ -554,10 +554,10 @@ netx-ai/
 │   │   ├── task/                # Task + Record + 状态机
 │   │   └── tools/               # 通用 Tool 框架
 │   ├── pkg/
-│   ├── web/dist/                # 前端构建产物
-│   └── docker-compose.yml
+│   └── web/dist/                # 前端构建产物
 │
 ├── Dockerfile                   # 单容器多阶段构建
+├── docker-compose.yml           # 容器编排
 ├── docs/
 │   ├── requirements.md          # 本文档
 │   ├── finops-api-analysis.md   # FinOps API 参考

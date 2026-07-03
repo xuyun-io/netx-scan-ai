@@ -58,7 +58,7 @@ POST /listArtifacts     → 查产物（按 taskId）
 
 ```json
 {
-    "agentSpaceId": "0c1x0dgp8ob6kkjkpa0currh",
+    "agentSpaceId": "asp-xxxxxxxxxxxxxxxx",
     "clientToken": "f8d130a1-bc5e-4528-b916-21db4b0f66b5",
     "priority": "NORMAL",
     "prompt": "hello"
@@ -70,7 +70,7 @@ POST /listArtifacts     → 查产物（按 taskId）
 ```json
 {
     "task": {
-        "agentSpaceId": "0c1x0dgp8ob6kkjkpa0currh",
+        "agentSpaceId": "asp-xxxxxxxxxxxxxxxx",
         "automationId": null,
         "completedAt": null,
         "createdAt": "2026-07-01T05:49:34.181991346Z",
@@ -83,7 +83,7 @@ POST /listArtifacts     → 查产物（按 taskId）
         "status": "PENDING",
         "statusReason": null,
         "taskArn": "arn:aws:finops-agent:::agentspace/.../task/...",
-        "taskId": "u0a7vsbn53o0nmeqeqcmkwnk",
+        "taskId": "task-xxxxxxxxxxxxxxxx",
         "taskType": "ON_DEMAND",
         "triggerDetail": null,
         "updatedAt": null
@@ -153,7 +153,7 @@ IN_PROGRESS
 {
     "recordId": "11d076ec-011c-49d8-ae02-db87471e4dfd",
     "recordType": "RESPONSE",
-    "taskId": "u0a7vsbn53o0nmeqeqcmkwnk",
+    "taskId": "task-xxxxxxxxxxxxxxxx",
     "content": "Hello! I'm your AWS FinOps Agent...",
     "modelId": "us.anthropic.claude-sonnet-4-6",
     "createdAt": "2026-07-01T05:49:52.750282494Z",
@@ -232,7 +232,7 @@ Document 是用户上传到 AgentSpace 的上下文文件，用于给 Agent 提�
 
 ```json
 {
-    "agentSpaceId": "0c1x0dgp8ob6kkjkpa0currh",
+    "agentSpaceId": "asp-xxxxxxxxxxxxxxxx",
     "clientToken": "569f7b1b-8ec9-4ea7-adf7-418fba205700",
     "name": "Pod list.json",
     "contentType": "application/json",
@@ -245,11 +245,11 @@ Document 是用户上传到 AgentSpace 的上下文文件，用于给 Agent 提�
 ```json
 {
     "document": {
-        "agentSpaceId": "0c1x0dgp8ob6kkjkpa0currh",
+        "agentSpaceId": "asp-xxxxxxxxxxxxxxxx",
         "contentType": "application/json",
         "createdAt": "2026-07-01T05:54:20.702574958Z",
         "description": null,
-        "documentId": "thdwgngafwjjix7badg708yj",
+        "documentId": "doc-xxxxxxxxxxxxxxxx",
         "fileSize": 557479,
         "name": "Pod list.json",
         "processedAt": null,
@@ -271,7 +271,7 @@ Document 是用户上传到 AgentSpace 的上下文文件，用于给 Agent 提�
 
 ```json
 {
-    "agentSpaceId": "0c1x0dgp8ob6kkjkpa0currh",
+    "agentSpaceId": "asp-xxxxxxxxxxxxxxxx",
     "maxResults": 100
 }
 ```
@@ -284,7 +284,7 @@ Document 是用户上传到 AgentSpace 的上下文文件，用于给 Agent 提�
         {
             "contentType": "application/json",
             "createdAt": "2026-07-01T05:54:20Z",
-            "documentId": "thdwgngafwjjix7badg708yj",
+            "documentId": "doc-xxxxxxxxxxxxxxxx",
             "fileSize": 557479,
             "name": "Pod list.json",
             "status": "ACTIVE",

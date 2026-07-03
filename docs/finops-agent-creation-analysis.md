@@ -28,11 +28,11 @@ URL 解析：
 
 | 部分 | 含义 |
 |------|------|
-| `0c1x0dgp8ob6kkjkpa0currh` | **AgentSpaceId**，Agent 的唯一空间标识 |
+| `asp-xxxxxxxxxxxxxxxx` | **AgentSpaceId**，Agent 的唯一空间标识 |
 | `webapp.finops-agent.global.app.aws` | FinOps Agent Webapp 统一域名 |
 | `#/context` | 当前页面：Context files（上下文文件） |
 | `mode=schedule` | 页面视图模式参数 |
-| `c=mmbnwg3yisoqpjkv641f1fiv` | ConversationId，当前会话 ID |
+| `c=conv-xxxxxxxxxxxxxxxx` | ConversationId，当前会话 ID |
 
 ---
 
@@ -98,7 +98,7 @@ URL 解析：
 
 同时系统会分配：
 
-1. **`agentSpaceId`**：Agent 的唯一空间 ID，例如 `0c1x0dgp8ob6kkjkpa0currh`
+1. **`agentSpaceId`**：Agent 的唯一空间 ID，例如 `asp-xxxxxxxxxxxxxxxx`
 2. **独立 webapp URL**：`https://{agentSpaceId}.webapp.finops-agent.global.app.aws/`
 3. **两个 IAM Role**：
    - `FinOpsAgentRole-xxx`：Agent 访问 AWS 资源
@@ -377,7 +377,7 @@ NetX all-in-one 容器必须保证 **Docker 启停不影响 Agent 数据**。参
 **`agent.yaml`**：
 
 ```yaml
-agentSpaceId: 0c1x0dgp8ob6kkjkpa0currh
+agentSpaceId: asp-xxxxxxxxxxxxxxxx
 name: chain287-sre-agent
 description: NetX Chain287 SRE Agent
 createdAt: 2026-07-01T05:54:20Z
@@ -391,8 +391,8 @@ integrations:
 **`tasks/{taskId}/task.yaml`**：
 
 ```yaml
-taskId: u0a7vsbn53o0nmeqeqcmkwnk
-agentSpaceId: 0c1x0dgp8ob6kkjkpa0currh
+taskId: task-xxxxxxxxxxxxxxxx
+agentSpaceId: asp-xxxxxxxxxxxxxxxx
 prompt: "检查所有 validator 健康状态"
 priority: NORMAL
 status: COMPLETED
@@ -431,7 +431,7 @@ services:
       - "8080:8080"
     environment:
       - NETX_DATA_DIR=/data/agents
-      - NETX_DEFAULT_AGENT_SPACE_ID=0c1x0dgp8ob6kkjkpa0currh
+      - NETX_DEFAULT_AGENT_SPACE_ID=asp-xxxxxxxxxxxxxxxx
 ```
 
 #### 数据生命周期

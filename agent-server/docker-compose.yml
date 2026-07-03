@@ -2,7 +2,7 @@ services:
   netx-sre-agent:
     build:
       context: ..
-      dockerfile: agent-server/Dockerfile
+      dockerfile: Dockerfile
     image: netx-sre-agent:latest
     container_name: netx-sre-agent
     ports:

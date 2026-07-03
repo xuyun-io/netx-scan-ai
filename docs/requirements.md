@@ -555,9 +555,9 @@ netx-ai/
 │   │   └── tools/               # 通用 Tool 框架
 │   ├── pkg/
 │   ├── web/dist/                # 前端构建产物
-│   ├── Dockerfile
 │   └── docker-compose.yml
 │
+├── Dockerfile                   # 单容器多阶段构建
 ├── docs/
 │   ├── requirements.md          # 本文档
 │   ├── finops-api-analysis.md   # FinOps API 参考

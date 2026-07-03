@@ -2,16 +2,16 @@
 
 FROM node:24-alpine AS ui-builder
 WORKDIR /app/agent-ui
-COPY agent-ui/package*.json ./
+COPY ./agent-ui/package*.json ./
 RUN npm ci
-COPY agent-ui/ ./
+COPY ./agent-ui/ ./
 RUN npm run build
 
 FROM golang:1.26-alpine AS server-builder
 WORKDIR /app/agent-server
-COPY agent-server/go.mod agent-server/go.sum ./
+COPY ./agent-server/go.mod ./agent-server/go.sum ./
 RUN go mod download
-COPY agent-server/ ./
+COPY ./agent-server/ ./
 COPY --from=ui-builder /app/agent-ui/dist ./web/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/netx-sre-agent ./cmd/server
 

@@ -210,11 +210,11 @@ netx-ai/
 │   ├── web/                     # 构建后的前端静态文件
 │   │   └── dist/
 │   │
-│   ├── Dockerfile
 │   ├── docker-compose.yml
 │   ├── go.mod
 │   └── go.sum
 │
+├── Dockerfile                   # 单容器多阶段构建
 └── docs/
     └── architecture.md
 ```
@@ -492,7 +492,7 @@ mux.Handle("/", http.FileServer(http.Dir("./web/dist")))
 ### 6.4 启动命令
 
 ```bash
-docker build -t netx-agent:latest -f agent-server/Dockerfile .
+docker build -t netx-agent:latest .
 docker run -p 8080:8080 -v ./data/agents:/data/agents netx-agent:latest
 ```
 

@@ -21,7 +21,7 @@ AWS FinOps Agent 在 AWS 控制台中通过**五步引导式向导**创建。每
 示例创建完成后的 URL：
 
 ```text
-https://0c1x0dgp8ob6kkjkpa0currh.webapp.finops-agent.global.app.aws/#/context?mode=schedule&c=mmbnwg3yisoqpjkv641f1fiv
+https://{agentSpaceId}.webapp.finops-agent.global.app.aws/#/context?mode=schedule&c={contextId}
 ```
 
 URL 解析：

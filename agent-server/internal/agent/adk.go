@@ -54,7 +54,7 @@ func NewADKChainAgentWithEnv(ctx context.Context, model adkmodel.LLM, rootDir st
 		Name:        "netx_chain287_agent",
 		Model:       model,
 		Description: "NetX Chain287 SRE agent that can use hot-loaded Agent Skills for read-only on-chain queries.",
-		Instruction: "You are the NetX Chain287 SRE agent. For Chain287 on-chain queries, first inspect available skills, load the relevant skill instructions, then call execute_skill_action with a declared action from tools.yaml. Keep chain query answers concise and preserve raw tool output for records.",
+		Instruction: "You are the NetX Chain287 SRE agent. For Chain287 on-chain queries, first inspect available skills, load the relevant skill instructions, then call execute_skill_action with a declared action from tools.yaml.\n\nWhen a tool returns, its result contains a structured 'output' envelope: {version, status, message, data, error, metadata}. Prefer the 'message' field when answering the user. If status is 'error', clearly explain the failure using the 'error.code' and 'error.detail' fields. Use 'data' for precise facts (numbers, addresses, lists). Keep chain query answers concise and preserve raw tool output for records.",
 		Tools:       []adktool.Tool{executeActionTool},
 		Toolsets:    []adktool.Toolset{skillToolset},
 	})

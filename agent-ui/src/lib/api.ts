@@ -1,5 +1,39 @@
 export type Status = 'PENDING' | 'IN_PROGRESS' | 'AWAITING_INPUT' | 'COMPLETED' | 'SUCCESS' | 'FAILED';
 
+export type SkillOutputStatus = 'ok' | 'error' | 'partial' | 'pending';
+
+export interface SkillOutputError {
+  code: string;
+  detail?: string;
+}
+
+export interface SkillOutputDisplay {
+  format?: string;
+  title?: string;
+  unit?: string;
+  collapsed?: boolean;
+}
+
+export interface SkillOutputMetadata {
+  skill?: string;
+  action?: string;
+  version?: string;
+  timestamp?: string;
+  source?: string;
+  readonly?: boolean;
+  durationMs?: number;
+}
+
+export interface SkillOutput {
+  version: string;
+  status: SkillOutputStatus;
+  message: string;
+  data?: Record<string, unknown>;
+  error?: SkillOutputError;
+  display?: SkillOutputDisplay;
+  metadata?: SkillOutputMetadata;
+}
+
 export interface AgentSpace {
   agentSpaceId: string;
   name: string;

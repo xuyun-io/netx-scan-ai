@@ -3,7 +3,6 @@ package skills
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -29,17 +28,17 @@ type Runner struct {
 }
 
 type ActionResult struct {
-	Skill       string         `json:"skill"`
-	Action      string         `json:"action"`
-	Description string         `json:"description,omitempty"`
-	Command     string         `json:"command,omitempty"`
-	ReadOnly    bool           `json:"readonly"`
-	Approval    bool           `json:"approval"`
-	Stdout      string         `json:"stdout,omitempty"`
-	Stderr      string         `json:"stderr,omitempty"`
-	JSON        map[string]any `json:"json,omitempty"`
-	Duration    time.Duration  `json:"duration"`
-	ExitCode    int            `json:"exitCode"`
+	Skill       string        `json:"skill"`
+	Action      string        `json:"action"`
+	Description string        `json:"description,omitempty"`
+	Command     string        `json:"command,omitempty"`
+	ReadOnly    bool          `json:"readonly"`
+	Approval    bool          `json:"approval"`
+	Stdout      string        `json:"stdout,omitempty"`
+	Stderr      string        `json:"stderr,omitempty"`
+	Output      *SkillOutput  `json:"output,omitempty"`
+	Duration    time.Duration `json:"duration"`
+	ExitCode    int           `json:"exitCode"`
 }
 
 type manifest struct {
@@ -151,9 +150,7 @@ func (r *Runner) RunWithEnv(ctx context.Context, skillName, actionName string, v
 	result.Stderr = strings.TrimSpace(cleanStderr)
 	result.Duration = duration
 	result.ExitCode = exitCode(runErr)
-	if parsed := parseJSONObject(result.Stdout); parsed != nil {
-		result.JSON = parsed
-	}
+	result.Output = NormalizeSkillOutput(result.Stdout, result.Stderr, result.ExitCode, OutputMetadataFromResult(result, start))
 
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return result, fmt.Errorf("skill %q action %q timed out after %s", skillName, actionName, timeout)
@@ -288,18 +285,6 @@ func substitute(value string, vars map[string]string) string {
 		}
 		return os.Getenv(key)
 	})
-}
-
-func parseJSONObject(output string) map[string]any {
-	output = strings.TrimSpace(output)
-	if output == "" || !strings.HasPrefix(output, "{") {
-		return nil
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
-		return nil
-	}
-	return parsed
 }
 
 func exitCode(err error) int {

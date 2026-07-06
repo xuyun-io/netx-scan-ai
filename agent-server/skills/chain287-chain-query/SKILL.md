@@ -19,3 +19,36 @@ Use this skill for read-only Chain287 on-chain queries.
 ## Available Action
 
 - `latest_block`: query the latest Chain287 block number with `cast block-number`.
+
+## Output format
+
+All actions in this skill return a JSON envelope with this structure:
+
+```json
+{
+  "version": "1.0",
+  "status": "ok" | "error",
+  "message": "Human-readable summary in Chinese or English",
+  "data": {
+    // action-specific structured data
+  },
+  "error": {
+    "code": "ERROR_CODE",
+    "detail": "Detailed error description"
+  },
+  "metadata": {
+    "source": "cast block-number",
+    "timestamp": "2026-07-06T10:00:00Z"
+  }
+}
+```
+
+For `latest_block`, `data` contains `blockNumber`:
+
+```json
+{
+  "data": {
+    "blockNumber": 311554
+  }
+}
+```

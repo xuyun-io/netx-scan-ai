@@ -90,6 +90,7 @@ import {
   type Conversation,
   type DocumentFile,
   type RecordEntry,
+  type SkillOutput,
   type Status,
   type Task,
   type Turn,
@@ -116,7 +117,8 @@ type ChatEvent =
       name: string;
       status: 'called' | 'result' | 'error';
       request?: string;
-      response?: string;
+      rawResponse?: string;
+      output?: SkillOutput;
       skill?: string;
       action?: string;
       createdAt?: string;
@@ -1019,7 +1021,7 @@ function AssistantResponseEvent({
     .reverse()
     .find((event): event is Extract<ChatEvent, { type: 'status' }> => event.type === 'status' && event.state === 'running');
   const running = Boolean(runningStatus);
-  const processEvents = events.filter((event) => event.type !== 'answer' && !(event.type === 'status' && event.state === 'running'));
+  const processEvents = events.filter((event) => event.type === 'tool');
   const stepCount = processEvents.length;
   const [showSteps, setShowSteps] = useState(!answer || running);
   const userToggled = useRef(false);
@@ -1192,7 +1194,16 @@ function ToolEvent({ event, embedded = false }: { event: Extract<ChatEvent, { ty
       : event.kind === 'resource'
         ? `${complete ? 'Loaded' : 'Loading'}`
         : `${complete ? 'Called tool' : 'Calling tool'}`;
-  const hasDetails = Boolean(event.request || event.response);
+  const output = event.output;
+  const hasDetails = Boolean(event.request || event.rawResponse || output?.data);
+  const statusStyle =
+    output?.status === 'ok'
+      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+      : output?.status === 'error'
+        ? 'bg-red-500/10 text-red-300 border-red-500/20'
+        : output?.status === 'partial' || output?.status === 'pending'
+          ? 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+          : '';
   return (
     <div className={cn('min-w-0 max-w-full overflow-hidden', embedded ? '' : 'rounded-md border border-[#202936] bg-[#0d131b] px-4 py-3')}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm font-bold leading-6">
@@ -1213,6 +1224,11 @@ function ToolEvent({ event, embedded = false }: { event: Extract<ChatEvent, { ty
             {event.skill}{event.action ? ` / ${event.action}` : ''}
           </span>
         )}
+        {output && output.status && (
+          <span className={cn('rounded border px-2 py-0.5 text-[11px]', statusStyle)}>
+            {output.status}
+          </span>
+        )}
         {hasDetails && (
           <button
             className="text-[#9a91ff] underline underline-offset-2 hover:text-[#b8b0ff]"
@@ -1222,10 +1238,21 @@ function ToolEvent({ event, embedded = false }: { event: Extract<ChatEvent, { ty
           </button>
         )}
       </div>
+      {output?.message && (
+        <div className={cn('mt-2 text-sm leading-6 text-[#aeb7c5]', embedded ? 'ml-6' : '')}>
+          {output.message}
+        </div>
+      )}
+      {output?.error && (
+        <div className={cn('mt-2 text-sm leading-6 text-red-300', embedded ? 'ml-6' : '')}>
+          {output.error.code}{output.error.detail ? `: ${output.error.detail}` : ''}
+        </div>
+      )}
       {expanded && hasDetails && (
         <div className={cn('mt-3 grid min-w-0 max-w-full gap-3 overflow-hidden', embedded ? 'ml-6 max-w-[calc(100%-1.5rem)]' : '')}>
           {event.request && <PayloadBlock label="Request" value={event.request} />}
-          {event.response && <PayloadBlock label="Response" value={event.response} />}
+          {output?.data && <PayloadBlock label="Data" value={JSON.stringify(output.data, null, 2)} />}
+          {event.rawResponse && <PayloadBlock label="Response" value={prettyPayload(event.rawResponse)} />}
         </div>
       )}
     </div>
@@ -2185,10 +2212,14 @@ function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?: strin
 
     if (record.recordType === 'TOOL_RESULT' && record.toolResult) {
       const id = scopedEventId(options.scopeKey, `tool-${record.toolResult.toolUseId || record.recordId}`);
+      const output = parseSkillOutput(record.toolResult.output);
+      const resultStatus: Extract<ChatEvent, { type: 'tool' }>['status'] =
+        record.toolResult.isError || output?.status === 'error' ? 'error' : 'result';
       const event = processById.get(id);
       if (event) {
-        event.status = record.toolResult.isError ? 'error' : 'result';
-        event.response = prettyPayload(record.toolResult.output);
+        event.status = resultStatus;
+        event.rawResponse = record.toolResult.output;
+        event.output = output;
         event.skill = event.skill || record.toolResult.skill;
         event.action = event.action || record.toolResult.action;
       } else {
@@ -2197,8 +2228,9 @@ function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?: strin
           type: 'tool',
           kind: 'tool',
           name: record.toolResult.action || 'tool',
-          status: record.toolResult.isError ? 'error' : 'result',
-          response: prettyPayload(record.toolResult.output),
+          status: resultStatus,
+          rawResponse: record.toolResult.output,
+          output,
           skill: record.toolResult.skill,
           action: record.toolResult.action,
           createdAt: record.createdAt,
@@ -2214,7 +2246,7 @@ function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?: strin
       const event = processById.get(id);
       if (event) {
         event.status = record.loadSkill.output ? 'result' : event.status;
-        event.response = event.response || prettyPayload(record.loadSkill.output);
+        event.rawResponse = event.rawResponse || record.loadSkill.output;
         event.skill = event.skill || record.loadSkill.skillName;
         event.name = record.loadSkill.skillName || event.name;
       } else {
@@ -2225,7 +2257,7 @@ function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?: strin
           name: record.loadSkill.skillName || 'skill',
           status: record.loadSkill.output ? 'result' : 'called',
           request: prettyPayload(record.loadSkill.input),
-          response: prettyPayload(record.loadSkill.output),
+          rawResponse: record.loadSkill.output,
           skill: record.loadSkill.skillName,
           createdAt: record.createdAt,
         };
@@ -2240,7 +2272,7 @@ function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?: strin
       const event = processById.get(id);
       if (event) {
         event.status = record.loadTool.output ? 'result' : event.status;
-        event.response = event.response || prettyPayload(record.loadTool.output);
+        event.rawResponse = event.rawResponse || record.loadTool.output;
       } else {
         const nextEvent: Extract<ChatEvent, { type: 'tool' }> = {
           id,
@@ -2249,7 +2281,7 @@ function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?: strin
           name: record.loadTool.toolName || 'resource',
           status: record.loadTool.output ? 'result' : 'called',
           request: prettyPayload(record.loadTool.input),
-          response: prettyPayload(record.loadTool.output),
+          rawResponse: record.loadTool.output,
           createdAt: record.createdAt,
         };
         processById.set(id, nextEvent);
@@ -2449,6 +2481,20 @@ function prettyPayload(value?: string) {
   } catch {
     return value;
   }
+}
+
+function parseSkillOutput(response?: string): SkillOutput | undefined {
+  if (!response) return undefined;
+  try {
+    const parsed = JSON.parse(response) as { output?: SkillOutput };
+    const output = parsed.output;
+    if (output && typeof output.version === 'string' && typeof output.status === 'string' && typeof output.message === 'string') {
+      return output;
+    }
+  } catch {
+    // Not a skill action response or invalid envelope.
+  }
+  return undefined;
 }
 
 function cleanAnswerContent(value?: string) {

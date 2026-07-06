@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/model"
+	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/skills"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/store"
 	adkmodel "google.golang.org/adk/v2/model"
+	adksession "google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool/skilltoolset/skill"
 	"google.golang.org/genai"
 )
@@ -84,17 +86,91 @@ func TestProcessTurnUsesADKModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != model.StatusCompleted {
+	if updated.Status != model.StatusSuccess {
 		t.Fatalf("status = %s", updated.Status)
 	}
-	if updated.Response != "mock model response" {
-		t.Fatalf("response = %q", updated.Response)
+	if updated.Output == nil || updated.Output.Text != "mock model response" {
+		t.Fatalf("output = %+v", updated.Output)
 	}
 	if capturedEnv["GOOGLE_API_KEY"] != "space-key" {
 		t.Fatalf("model env GOOGLE_API_KEY = %q", capturedEnv["GOOGLE_API_KEY"])
 	}
 	if capturedEnv["CHAIN287_RPC_URL"] != "https://rpc.chain287.example" {
 		t.Fatalf("model env CHAIN287_RPC_URL = %q", capturedEnv["CHAIN287_RPC_URL"])
+	}
+
+	records, err := fileStore.ListRecords(ctx, space.ID, "", conversation.ID, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Type != model.RecordResponse || records[0].Content != "mock model response" {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
+func TestADKPartToRecordStructuresSkillActionTool(t *testing.T) {
+	event := &adksession.Event{LLMResponse: adkmodel.LLMResponse{ModelVersion: "mock-model"}}
+	callRecord, ok := adkPartToRecord(&genai.Part{
+		FunctionCall: &genai.FunctionCall{
+			ID:   "tool-1",
+			Name: skills.ExecuteActionToolName,
+			Args: map[string]any{
+				"skill":  "chain287-chain-query",
+				"action": "latest_block",
+			},
+		},
+	}, event, false)
+	if !ok {
+		t.Fatal("tool call record not created")
+	}
+	if callRecord.Type != model.RecordToolCall || callRecord.ToolCall == nil {
+		t.Fatalf("call record = %+v", callRecord)
+	}
+	if callRecord.ToolCall.ToolName != "latest_block" || callRecord.ToolCall.Skill != "chain287-chain-query" {
+		t.Fatalf("tool call = %+v", callRecord.ToolCall)
+	}
+
+	resultRecord, ok := adkPartToRecord(&genai.Part{
+		FunctionResponse: &genai.FunctionResponse{
+			ID:   "tool-1",
+			Name: skills.ExecuteActionToolName,
+			Response: map[string]any{
+				"skill":    "chain287-chain-query",
+				"action":   "latest_block",
+				"exitCode": 0,
+			},
+		},
+	}, event, false)
+	if !ok {
+		t.Fatal("tool result record not created")
+	}
+	if resultRecord.Type != model.RecordToolResult || resultRecord.ToolResult == nil {
+		t.Fatalf("result record = %+v", resultRecord)
+	}
+	if resultRecord.ToolResult.ToolUseID != "tool-1" || resultRecord.ToolResult.Skill != "chain287-chain-query" {
+		t.Fatalf("tool result = %+v", resultRecord.ToolResult)
+	}
+}
+
+func TestSanitizeFinalTextRemovesToolDetails(t *testing.T) {
+	input := "最新块高是 315689。\n\n<details> <summary>tool_code</summary>\nCalled tool latest_block\n</details>"
+	if got := sanitizeFinalText(input); got != "最新块高是 315689。" {
+		t.Fatalf("sanitizeFinalText() = %q", got)
+	}
+
+	malformed := "最新块高是 315689。 <details> <summary>tool_code</summary>"
+	if got := sanitizeFinalText(malformed); got != "最新块高是 315689。" {
+		t.Fatalf("sanitizeFinalText(malformed) = %q", got)
+	}
+}
+
+func TestADKPartToRecordSkipsToolDetailStatusText(t *testing.T) {
+	event := &adksession.Event{LLMResponse: adkmodel.LLMResponse{ModelVersion: "mock-model"}}
+	_, ok := adkPartToRecord(&genai.Part{
+		Text: "最新块高是 315689。 <details> <summary>tool_code</summary>",
+	}, event, false)
+	if ok {
+		t.Fatal("tool detail status text should be skipped")
 	}
 }
 

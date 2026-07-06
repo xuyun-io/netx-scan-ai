@@ -10,6 +10,8 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 )
 
+const ExecuteActionToolName = "execute_skill_action"
+
 type ExecuteActionInput struct {
 	Skill  string            `json:"skill" jsonschema:"Skill directory name, for example chain287-chain-query."`
 	Action string            `json:"action" jsonschema:"Action name declared in the skill tools.yaml file."`
@@ -20,6 +22,7 @@ type ExecuteActionOutput struct {
 	Skill          string         `json:"skill"`
 	Action         string         `json:"action"`
 	Description    string         `json:"description,omitempty"`
+	Command        string         `json:"command,omitempty"`
 	ReadOnly       bool           `json:"readonly"`
 	Approval       bool           `json:"approval"`
 	Stdout         string         `json:"stdout,omitempty"`
@@ -40,7 +43,7 @@ func NewExecuteActionToolWithEnv(runner *Runner, extraEnv map[string]string) (to
 	toolEnv := cloneStringMap(extraEnv)
 	return functiontool.New(
 		functiontool.Config{
-			Name:        "execute_skill_action",
+			Name:        ExecuteActionToolName,
 			Description: "Execute one declared action from a loaded skill's tools.yaml. Use this after loading the relevant skill instructions. The host executes only declared actions and rejects actions that require approval until approval workflow support is wired.",
 		},
 		func(ctx adkagent.Context, input ExecuteActionInput) (ExecuteActionOutput, error) {
@@ -81,6 +84,7 @@ func ExecuteActionOutputFromResult(result ActionResult) ExecuteActionOutput {
 		Skill:          result.Skill,
 		Action:         result.Action,
 		Description:    result.Description,
+		Command:        result.Command,
 		ReadOnly:       result.ReadOnly,
 		Approval:       result.Approval,
 		Stdout:         result.Stdout,

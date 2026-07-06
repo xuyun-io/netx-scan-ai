@@ -84,20 +84,20 @@ npm run build
 
 已使用 API（AWS FinOps 全 POST 风格）：
 
-- `POST /createAgentSpace` - 创建 AgentSpace
-- `POST /listAgentSpaces` - AgentSpace 列表
-- `POST /updateAgentSpace` - 更新 AgentSpace（环境变量等）
-- `POST /deleteAgentSpace` - 删除 AgentSpace
-- `POST /createConversation` - 创建会话
-- `POST /listConversations` - 会话列表
-- `POST /createTurn` - 创建轮次（返回 202，轮询结果）
-- `POST /getTurn` - 获取轮次状态/结果
-- `POST /createTask` - 创建任务（返回 202，轮询结果）
-- `POST /getTask` - 获取任务状态
-- `POST /listTasks` - 任务列表
-- `POST /listRecords` - 执行记录列表
-- `POST /listArtifacts` - 产物列表
-- `POST /createDocument` - 上传上下文文件
-- `POST /listDocuments` - 上下文文件列表
+- `POST /api/v1/createAgentSpace` - 创建 AgentSpace
+- `POST /api/v1/listAgentSpaces` - AgentSpace 列表
+- `POST /api/v1/updateAgentSpace` - 更新 AgentSpace（环境变量等）
+- `POST /api/v1/deleteAgentSpace` - 删除 AgentSpace
+- `POST /api/v1/createConversation` - 创建会话
+- `POST /api/v1/listConversations` - 会话列表
+- `POST /api/v1/createTurn` - 创建轮次（返回 202，轮询结果）
+- `POST /api/v1/getTurn` - 获取轮次状态/结果
+- `POST /api/v1/createTask` - 创建任务（返回 202，轮询结果）
+- `POST /api/v1/getTask` - 获取任务状态
+- `POST /api/v1/listTasks` - 任务列表
+- `POST /api/v1/listRecords` - 执行记录列表
+- `POST /api/v1/listArtifacts` - 产物列表
+- `POST /api/v1/createDocument` - 上传上下文文件
+- `POST /api/v1/listDocuments` - 上下文文件列表
 
 第一版采用轮询获取异步结果，SSE 作为后续优化。

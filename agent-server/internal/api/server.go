@@ -35,30 +35,30 @@ func New(store *store.Store, agentService *agent.Service, webDist string) *Serve
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	for path, handler := range map[string]http.HandlerFunc{
-		"/createAgentSpace":   s.createAgentSpace,
-		"/listAgentSpaces":    s.listAgentSpaces,
-		"/getAgentSpace":      s.getAgentSpace,
-		"/updateAgentSpace":   s.updateAgentSpace,
-		"/deleteAgentSpace":   s.deleteAgentSpace,
-		"/createConversation": s.createConversation,
-		"/listConversations":  s.listConversations,
-		"/getConversation":    s.getConversation,
-		"/deleteConversation": s.deleteConversation,
-		"/createTurn":         s.createTurn,
-		"/getTurn":            s.getTurn,
-		"/createTask":         s.createTask,
-		"/getTask":            s.getTask,
-		"/listTasks":          s.listTasks,
-		"/deleteTask":         s.deleteTask,
-		"/respondToTask":      s.respondToTask,
-		"/listRecords":        s.listRecords,
-		"/listArtifacts":      s.listArtifacts,
-		"/getArtifact":        s.getArtifact,
-		"/createDocument":     s.createDocument,
-		"/listDocuments":      s.listDocuments,
-		"/getDocument":        s.getDocument,
-		"/deleteDocument":     s.deleteDocument,
-		"/healthz":            s.healthz,
+		"/api/v1/createAgentSpace":   s.createAgentSpace,
+		"/api/v1/listAgentSpaces":    s.listAgentSpaces,
+		"/api/v1/getAgentSpace":      s.getAgentSpace,
+		"/api/v1/updateAgentSpace":   s.updateAgentSpace,
+		"/api/v1/deleteAgentSpace":   s.deleteAgentSpace,
+		"/api/v1/createConversation": s.createConversation,
+		"/api/v1/listConversations":  s.listConversations,
+		"/api/v1/getConversation":    s.getConversation,
+		"/api/v1/deleteConversation": s.deleteConversation,
+		"/api/v1/createTurn":         s.createTurn,
+		"/api/v1/getTurn":            s.getTurn,
+		"/api/v1/createTask":         s.createTask,
+		"/api/v1/getTask":            s.getTask,
+		"/api/v1/listTasks":          s.listTasks,
+		"/api/v1/deleteTask":         s.deleteTask,
+		"/api/v1/respondToTask":      s.respondToTask,
+		"/api/v1/listRecords":        s.listRecords,
+		"/api/v1/listArtifacts":      s.listArtifacts,
+		"/api/v1/getArtifact":        s.getArtifact,
+		"/api/v1/createDocument":     s.createDocument,
+		"/api/v1/listDocuments":      s.listDocuments,
+		"/api/v1/getDocument":        s.getDocument,
+		"/api/v1/deleteDocument":     s.deleteDocument,
+		"/api/v1/healthz":            s.healthz,
 	} {
 		mux.Handle(path, s.postOnly(handler))
 	}
@@ -83,7 +83,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) postOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" && r.Method == http.MethodGet {
+		if r.URL.Path == "/api/v1/healthz" && r.Method == http.MethodGet {
 			next(w, r)
 			return
 		}
@@ -244,7 +244,7 @@ func (s *Server) createTurn(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, entity(turn))
+	writeJSON(w, http.StatusAccepted, map[string]any{"turn": turn})
 }
 
 func (s *Server) getTurn(w http.ResponseWriter, r *http.Request) {
@@ -257,7 +257,7 @@ func (s *Server) getTurn(w http.ResponseWriter, r *http.Request) {
 		writeNotFoundOrError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, entity(turn))
+	writeJSON(w, http.StatusOK, map[string]any{"turn": turn})
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -345,7 +345,10 @@ func (s *Server) listRecords(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, model.Page[model.Record]{Entities: applyLimit(records, req.MaxResults)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"records":   applyLimit(records, req.MaxResults),
+		"nextToken": nil,
+	})
 }
 
 func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {

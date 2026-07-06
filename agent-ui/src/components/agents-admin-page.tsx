@@ -94,6 +94,15 @@ export function AgentsAdminPage({
   const [selectedAgent, setSelectedAgent] = useState<AgentSpace | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
+  // 当 agentSpaces 列表刷新时，同步更新当前详情页中的 AgentSpace 数据
+  useEffect(() => {
+    if (!selectedAgent) return;
+    const updated = agentSpaces.find((space) => space.agentSpaceId === selectedAgent.agentSpaceId);
+    if (updated && updated.updatedAt !== selectedAgent.updatedAt) {
+      setSelectedAgent(updated);
+    }
+  }, [agentSpaces, selectedAgent]);
+
   const handleSelectAgent = (agentSpace: AgentSpace) => {
     setSelectedAgent(agentSpace);
     setView('detail');

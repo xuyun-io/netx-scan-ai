@@ -63,15 +63,15 @@ go run .\cmd\server
 ## API 示例
 
 ```bash
-curl -X POST http://127.0.0.1:8080/createAgentSpace \
+curl -X POST http://127.0.0.1:8080/api/v1/createAgentSpace \\
   -H 'content-type: application/json' \
   -d '{"name":"NetX Chain287 SRE","llm":{"provider":"gemini","model":"gemini-2.5-pro"},"environment":{"GOOGLE_API_KEY":"...","CHAIN287_RPC_URL":"https://your-chain287-rpc.example"}}'
 ```
 
 异步接口：
 
-- `POST /createTurn` 返回 `202`
-- `POST /createTask` 返回 `202`
+- `POST /api/v1/createTurn` 返回 `202`
+- `POST /api/v1/createTask` 返回 `202`
 - 前端轮询 `getTurn` / `getTask`
 
 ## 数据目录

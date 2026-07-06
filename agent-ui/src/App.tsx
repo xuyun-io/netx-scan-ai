@@ -35,6 +35,7 @@ import {
   ThumbsUp,
   Trash2,
   Upload,
+  UserRound,
   Wrench,
   XCircle,
 } from 'lucide-react';
@@ -108,11 +109,25 @@ type ChatSurfaceVariant = 'full' | 'inline';
 type ChatEvent =
   | { id: string; type: 'user'; content: string; createdAt?: string }
   | { id: string; type: 'status'; content: string; state: 'running' | 'complete' | 'error'; createdAt?: string }
-  | { id: string; type: 'tool'; name: string; content: string; status: 'called' | 'result' | 'error'; metadata?: Record<string, string>; createdAt?: string }
+  | {
+      id: string;
+      type: 'tool';
+      kind: 'tool' | 'skill' | 'resource';
+      name: string;
+      status: 'called' | 'result' | 'error';
+      request?: string;
+      response?: string;
+      skill?: string;
+      action?: string;
+      createdAt?: string;
+    }
   | { id: string; type: 'task'; taskId: string; title: string; status: Status; description?: string; createdAt?: string }
   | { id: string; type: 'approval'; taskId: string; title: string; risk: string; target: string; command: string; status: Status }
   | { id: string; type: 'artifact'; artifactId: string; name: string; artifactType: string; createdAt?: string }
   | { id: string; type: 'answer'; content: string; taskId?: string; status: Status; createdAt?: string };
+type TimelineItem =
+  | { id: string; kind: 'event'; event: ChatEvent }
+  | { id: string; kind: 'assistant'; scopeKey: string; events: ChatEvent[] };
 
 const MAX_PROMPT_LENGTH = 1000;
 
@@ -429,48 +444,69 @@ function App() {
           : item,
       ),
     );
+    let scopeKey = '';
     try {
       const created = await createTurn(agentSpace.agentSpaceId, conversation.conversationId, userPrompt);
-      const turn = await pollTurn(agentSpace.agentSpaceId, conversation.conversationId, created.entity.turnId);
-      let finalTurn = turn;
-      let nextEvents: ChatEvent[] = [];
-      if (turn.taskId) {
-        const task = await pollTask(agentSpace.agentSpaceId, turn.taskId);
-        finalTurn = (await getTurn(agentSpace.agentSpaceId, conversation.conversationId, turn.turnId)).entity;
+      scopeKey = turnScope(created.turn.turnId);
+      const finalTurn = await pollTurnRecords({
+        agentSpaceId: agentSpace.agentSpaceId,
+        conversationId: conversation.conversationId,
+        turnId: created.turn.turnId,
+        onUpdate: (turn, records) => {
+          const nextEvents = recordsToChatEvents(records, { scopeKey });
+          if (!isTurnDone(turn)) {
+            nextEvents.push({
+              id: scopedEventId(scopeKey, `${turn.turnId}-status`),
+              type: 'status',
+              content: inProgressLabel(records),
+              state: 'running',
+              createdAt: turn.updatedAt,
+            });
+          } else if (!nextEvents.some((event) => event.type === 'answer') && turn.output?.text) {
+            const answerEvent = turnToAnswerEvent(turn, scopeKey);
+            if (answerEvent.content) {
+              nextEvents.push(answerEvent);
+            }
+          }
+          setChatEvents((prev) => replaceScopedEvents(prev, statusId, scopeKey, nextEvents));
+        },
+      });
+      if (finalTurn.taskId) {
+        const task = await pollTask(agentSpace.agentSpaceId, finalTurn.taskId);
         const [recordPage, artifactPage] = await Promise.all([
-          listRecords({ agentSpaceId: agentSpace.agentSpaceId, taskId: turn.taskId, maxResults: 100 }),
+          listRecords({ agentSpaceId: agentSpace.agentSpaceId, taskId: finalTurn.taskId, maxResults: 100 }),
           listArtifacts(agentSpace.agentSpaceId),
         ]);
-        nextEvents = [
-          ...recordsToChatEvents(recordPage.entities ?? []),
-          taskToChatEvent(task),
-          ...(task.status === 'AWAITING_INPUT' ? [taskToApprovalEvent(task)] : []),
-          ...artifactsToChatEvents((artifactPage.entities ?? []).filter((artifact) => artifact.taskId === task.taskId)),
+        const taskEvents = [
+          ...recordsToChatEvents(recordPage.records ?? [], { scopeKey }),
+          taskToChatEvent(task, scopeKey),
+          ...(task.status === 'AWAITING_INPUT' ? [taskToApprovalEvent(task, scopeKey)] : []),
+          ...artifactsToChatEvents((artifactPage.entities ?? []).filter((artifact) => artifact.taskId === task.taskId), scopeKey),
         ];
+        setChatEvents((prev) => replaceScopedEvents(prev, statusId, scopeKey, taskEvents));
       }
-      nextEvents.push(turnToAnswerEvent(finalTurn));
-      setChatEvents((prev) => replaceEvent(prev, statusId, nextEvents));
       await refresh(agentSpace.agentSpaceId);
       await loadConversations(agentSpace.agentSpaceId);
     } catch (err) {
       setError((err as Error).message);
+      const errorEvents: ChatEvent[] = [
+        {
+          id: scopeKey ? scopedEventId(scopeKey, 'error-status') : statusId,
+          type: 'status',
+          content: `请求失败：${(err as Error).message}`,
+          state: 'error',
+          createdAt: new Date().toISOString(),
+        },
+        {
+          id: scopeKey ? scopedEventId(scopeKey, 'error-answer') : crypto.randomUUID(),
+          type: 'answer',
+          content: `请求失败：${(err as Error).message}`,
+          status: 'FAILED',
+          createdAt: new Date().toISOString(),
+        },
+      ];
       setChatEvents((prev) =>
-        replaceEvent(prev, statusId, [
-          {
-            id: statusId,
-            type: 'status',
-            content: `请求失败：${(err as Error).message}`,
-            state: 'error',
-            createdAt: new Date().toISOString(),
-          },
-          {
-            id: crypto.randomUUID(),
-            type: 'answer',
-            content: `请求失败：${(err as Error).message}`,
-            status: 'FAILED',
-            createdAt: new Date().toISOString(),
-          },
-        ]),
+        scopeKey ? replaceScopedEvents(prev, statusId, scopeKey, errorEvents) : replaceEvent(prev, statusId, errorEvents),
       );
     } finally {
       setBusy(false);
@@ -918,33 +954,46 @@ function ChatTimeline({
   events: ChatEvent[];
   onApproveTask: (taskId: string, response: 'approve' | 'reject') => void;
 }) {
+  const timeline = useMemo(() => buildTimelineItems(events), [events]);
   return (
-    <div className={cn('space-y-6', compact ? '' : 'mx-auto max-w-[1280px]')}>
-      {events.map((event) => (
-        <ChatEventRow key={event.id} compact={compact} event={event} onApproveTask={onApproveTask} />
+    <div className="w-full max-w-[1500px] space-y-7">
+      {timeline.map((item) => (
+        <TimelineItemRow key={item.id} compact={compact} item={item} onApproveTask={onApproveTask} />
       ))}
     </div>
   );
 }
 
-function ChatEventRow({
+function TimelineItemRow({
   compact,
-  event,
+  item,
   onApproveTask,
 }: {
   compact: boolean;
-  event: ChatEvent;
+  item: TimelineItem;
   onApproveTask: (taskId: string, response: 'approve' | 'reject') => void;
 }) {
+  if (item.kind === 'assistant') {
+    return (
+      <div className={cn('grid min-w-0 gap-5', compact ? 'grid-cols-[30px_minmax(0,1fr)]' : 'grid-cols-[34px_minmax(0,1fr)]')}>
+        <EventAvatar type="answer" />
+        <div className="min-w-0">
+          <AssistantResponseEvent events={item.events} onApproveTask={onApproveTask} />
+        </div>
+      </div>
+    );
+  }
+
+  const { event } = item;
   const isUser = event.type === 'user';
   return (
-    <div className={cn('grid gap-4', compact ? 'grid-cols-[30px_minmax(0,1fr)]' : 'grid-cols-[38px_minmax(0,1fr)]')}>
+    <div className={cn('grid min-w-0 gap-5', compact ? 'grid-cols-[30px_minmax(0,1fr)]' : 'grid-cols-[34px_minmax(0,1fr)]')}>
       <EventAvatar type={event.type} />
       <div className="min-w-0">
         {event.type === 'user' && (
-          <div className="text-sm leading-6 text-[#eef2f8]">
-            <div className="whitespace-pre-wrap text-base font-semibold">{event.content}</div>
-            <div className="mt-1 text-xs font-semibold text-[#aab2bf]">{formatTime(event.createdAt)}</div>
+          <div className="pt-0.5 text-sm leading-6 text-[#aeb7c5]">
+            <div className="whitespace-pre-wrap text-[15px] font-semibold">{event.content}</div>
+            <div className="mt-1 text-xs font-semibold text-[#9ca6b5]">{formatTime(event.createdAt)}</div>
           </div>
         )}
         {!isUser && event.type === 'status' && <StatusEvent event={event} />}
@@ -958,16 +1007,149 @@ function ChatEventRow({
   );
 }
 
+function AssistantResponseEvent({
+  events,
+  onApproveTask,
+}: {
+  events: ChatEvent[];
+  onApproveTask: (taskId: string, response: 'approve' | 'reject') => void;
+}) {
+  const answer = [...events].reverse().find((event): event is Extract<ChatEvent, { type: 'answer' }> => event.type === 'answer');
+  const runningStatus = [...events]
+    .reverse()
+    .find((event): event is Extract<ChatEvent, { type: 'status' }> => event.type === 'status' && event.state === 'running');
+  const running = Boolean(runningStatus);
+  const processEvents = events.filter((event) => event.type !== 'answer' && !(event.type === 'status' && event.state === 'running'));
+  const stepCount = processEvents.length;
+  const [showSteps, setShowSteps] = useState(!answer || running);
+  const userToggled = useRef(false);
+
+  useEffect(() => {
+    if (running) {
+      userToggled.current = false;
+      setShowSteps(true);
+      return;
+    }
+    if (answer && !userToggled.current) {
+      setShowSteps(false);
+    }
+  }, [running, Boolean(answer)]);
+
+  const toggleSteps = () => {
+    userToggled.current = true;
+    setShowSteps((value) => !value);
+  };
+
+  return (
+    <div className="box-border w-full max-w-[1360px] min-w-0 overflow-hidden rounded-md border border-[#1c2530] bg-[#0a0f15] px-4 py-4 text-[#b8c1cf] shadow-[0_18px_55px_rgba(0,0,0,0.16)]">
+      {stepCount > 0 && !running && !showSteps && (
+        <button
+          className="mb-4 text-sm font-extrabold text-[#8f82ff] hover:text-[#b8b0ff]"
+          onClick={toggleSteps}
+        >
+          Show thinking process ({stepCount} {stepCount === 1 ? 'step' : 'steps'})
+        </button>
+      )}
+
+      {(showSteps || running) && stepCount > 0 && (
+        <div className="grid min-w-0 gap-3">
+          {processEvents.map((event) => (
+            <AssistantStepEvent key={event.id} event={event} onApproveTask={onApproveTask} />
+          ))}
+        </div>
+      )}
+
+      {runningStatus && (
+        <div className={cn(stepCount > 0 ? 'mt-5' : '')}>
+          <RunningProcess label={runningStatus.content} />
+        </div>
+      )}
+
+      {stepCount > 0 && !running && showSteps && (
+        <button
+          className="mt-4 text-sm font-extrabold text-[#8f82ff] hover:text-[#b8b0ff]"
+          onClick={toggleSteps}
+        >
+          Hide thinking process
+        </button>
+      )}
+
+      {answer && (
+        <div className={cn(stepCount > 0 || runningStatus ? 'mt-5' : '')}>
+          <AnswerEvent embedded event={answer} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssistantStepEvent({
+  event,
+  onApproveTask,
+}: {
+  event: ChatEvent;
+  onApproveTask: (taskId: string, response: 'approve' | 'reject') => void;
+}) {
+  if (event.type === 'status') {
+    return <StatusStep event={event} />;
+  }
+  if (event.type === 'tool') {
+    return <ToolEvent embedded event={event} />;
+  }
+  if (event.type === 'task') {
+    return <TaskEvent event={event} />;
+  }
+  if (event.type === 'approval') {
+    return <ApprovalEvent event={event} onApproveTask={onApproveTask} />;
+  }
+  if (event.type === 'artifact') {
+    return <ArtifactEvent event={event} />;
+  }
+  return null;
+}
+
+function StatusStep({ event }: { event: Extract<ChatEvent, { type: 'status' }> }) {
+  const icon =
+    event.state === 'error' ? (
+      <XCircle className="h-4 w-4 text-red-400" />
+    ) : event.state === 'complete' ? (
+      <MoreHorizontal className="h-4 w-4 text-[#9aa4b3]" />
+    ) : (
+      <Clock className="h-4 w-4 animate-spin text-[#aeb7c5]" />
+    );
+  return (
+    <div className="flex min-w-0 items-start gap-2 text-sm font-semibold leading-6 text-[#aeb7c5]">
+      <span className="mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center opacity-90">{icon}</span>
+      <span className="min-w-0 whitespace-pre-wrap break-words">{event.content}</span>
+    </div>
+  );
+}
+
+function RunningProcess({ label }: { label: string }) {
+  return (
+    <div>
+      <div className="flex items-center gap-2 text-sm font-bold text-[#aeb7c5]">
+        <Clock className="h-4 w-4 animate-spin text-[#c4cad5]" />
+        {label}
+      </div>
+      <div className="mt-3 h-[3px] w-full overflow-hidden rounded-full bg-[#242d3a]">
+        <div className="h-full w-1/3 animate-progress rounded-full bg-gradient-to-r from-[#8f82ff] via-[#18b8ff] to-[#9d4dff]" />
+      </div>
+      <button className="mt-4 text-sm font-extrabold text-[#8f82ff] hover:text-[#aaa2ff]">Cancel</button>
+    </div>
+  );
+}
+
 function EventAvatar({ type }: { type: ChatEvent['type'] }) {
   if (type === 'user') {
     return (
-      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#3d4452] text-[#eef2f8]">
-        <Circle className="h-4 w-4" />
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#454c57] text-[#eef2f8] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]">
+        <UserRound className="h-4 w-4" />
       </div>
     );
   }
   return (
-    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#1fb6ff] via-[#6a72ff] to-[#9c3cff] text-white">
+    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#18b8ff] via-[#7267ff] to-[#9b46ff] text-white shadow-[0_8px_22px_rgba(114,103,255,0.22)]">
       {type === 'tool' ? <Wrench className="h-4 w-4" /> : type === 'approval' ? <ShieldAlert className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
     </div>
   );
@@ -991,7 +1173,7 @@ function StatusEvent({ event }: { event: Extract<ChatEvent, { type: 'status' }> 
       {event.state === 'running' && (
         <>
           <div className="mt-3 h-[3px] w-[min(420px,70%)] overflow-hidden rounded-full bg-[#242d3a]">
-            <div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-[#8f82ff] via-[#18b8ff] to-[#9d4dff]" />
+            <div className="h-full w-1/3 animate-progress rounded-full bg-gradient-to-r from-[#8f82ff] via-[#18b8ff] to-[#9d4dff]" />
           </div>
           <button className="mt-3 text-sm font-bold text-[#8f82ff] hover:text-[#aaa2ff]">Cancel</button>
         </>
@@ -1000,27 +1182,63 @@ function StatusEvent({ event }: { event: Extract<ChatEvent, { type: 'status' }> 
   );
 }
 
-function ToolEvent({ event }: { event: Extract<ChatEvent, { type: 'tool' }> }) {
+function ToolEvent({ event, embedded = false }: { event: Extract<ChatEvent, { type: 'tool' }>; embedded?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
   const ok = event.status !== 'error';
+  const complete = event.status === 'result';
+  const label =
+    event.kind === 'skill'
+      ? `${complete ? 'Powered up skill' : 'Loading skill'}`
+      : event.kind === 'resource'
+        ? `${complete ? 'Loaded' : 'Loading'}`
+        : `${complete ? 'Called tool' : 'Calling tool'}`;
+  const hasDetails = Boolean(event.request || event.response);
   return (
-    <div className="rounded-md border border-[#202936] bg-[#0d131b] px-4 py-3">
-      <div className="flex items-center gap-2 text-sm font-bold">
-        {ok ? <Check className="h-4 w-4 text-[#35d05d]" /> : <XCircle className="h-4 w-4 text-red-400" />}
-        <span className={ok ? 'text-[#35d05d]' : 'text-red-300'}>
-          {event.status === 'result' ? 'Tool result' : 'Called tool'} {event.name}
-        </span>
-        <button className="text-[#9a91ff] underline underline-offset-2">Expand</button>
+    <div className={cn('min-w-0 max-w-full overflow-hidden', embedded ? '' : 'rounded-md border border-[#202936] bg-[#0d131b] px-4 py-3')}>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm font-bold leading-6">
+        {complete ? (
+          <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-[#26d044] text-[#26d044]">
+            <Check className="h-3 w-3 stroke-[3]" />
+          </span>
+        ) : event.status === 'error' ? (
+          <XCircle className="h-4 w-4 text-red-400" />
+        ) : (
+          <Clock className="h-4 w-4 animate-spin text-[#c4cad5]" />
+        )}
+        <span className={ok ? 'text-[#26d044]' : 'text-red-300'}>{label}</span>
+        {event.kind !== 'skill' && <span className="min-w-0 max-w-full truncate text-[#c6ceda]">{event.name}</span>}
+        {event.kind === 'skill' && <span className="min-w-0 max-w-full truncate text-[#c6ceda]">{event.name}</span>}
+        {!embedded && event.skill && event.kind === 'tool' && (
+          <span className="rounded border border-[#2a3b4d] px-2 py-0.5 text-[11px] text-[#aab2bf]">
+            {event.skill}{event.action ? ` / ${event.action}` : ''}
+          </span>
+        )}
+        {hasDetails && (
+          <button
+            className="text-[#9a91ff] underline underline-offset-2 hover:text-[#b8b0ff]"
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? 'Collapse' : 'Expand'}
+          </button>
+        )}
       </div>
-      <div className="mt-2 text-sm leading-6 text-[#cbd3df]">{event.content}</div>
-      {event.metadata && Object.keys(event.metadata).length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-2">
-          {Object.entries(event.metadata).map(([key, value]) => (
-            <span key={key} className="rounded bg-[#18212d] px-2 py-0.5 font-mono text-[11px] text-[#aab2bf]">
-              {key}: {value}
-            </span>
-          ))}
+      {expanded && hasDetails && (
+        <div className={cn('mt-3 grid min-w-0 max-w-full gap-3 overflow-hidden', embedded ? 'ml-6 max-w-[calc(100%-1.5rem)]' : '')}>
+          {event.request && <PayloadBlock label="Request" value={event.request} />}
+          {event.response && <PayloadBlock label="Response" value={event.response} />}
         </div>
       )}
+    </div>
+  );
+}
+
+function PayloadBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 max-w-full overflow-hidden">
+      <div className="mb-1 text-xs font-extrabold uppercase tracking-wide text-[#aab2bf]">{label}</div>
+      <pre className="max-h-[260px] max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-[#202936] bg-[#101722] px-3 py-2 font-mono text-xs leading-5 text-[#d8dee8] [overflow-wrap:anywhere]">
+        {value}
+      </pre>
     </div>
   );
 }
@@ -1088,20 +1306,32 @@ function ArtifactEvent({ event }: { event: Extract<ChatEvent, { type: 'artifact'
   );
 }
 
-function AnswerEvent({ event }: { event: Extract<ChatEvent, { type: 'answer' }> }) {
-  return (
-    <div className="rounded-md border border-[#202936] bg-[#0d131b] px-4 py-3 text-[#cbd3df]">
-      <div className="prose-netx whitespace-pre-wrap text-sm leading-6">{event.content}</div>
+function AnswerEvent({ event, embedded = false }: { event: Extract<ChatEvent, { type: 'answer' }>; embedded?: boolean }) {
+  const body = (
+    <>
+      <div className="prose-netx min-w-0 max-w-full whitespace-pre-wrap break-words text-sm font-semibold leading-6 text-[#b8c1cf] [overflow-wrap:anywhere]">{event.content}</div>
       {event.taskId && (
         <div className="mt-3 inline-flex rounded border border-[#8378ff]/40 px-2 py-1 text-xs font-bold text-[#9a91ff]">
           Task: {event.taskId}
         </div>
       )}
-      <div className="mt-4 flex justify-end gap-3 text-[#c4cad5]">
+      <div className="mt-4 flex justify-end gap-3 text-[#9aa4b3]">
         <button aria-label="Thumbs up" className="hover:text-white"><ThumbsUp className="h-4 w-4" /></button>
         <button aria-label="Thumbs down" className="hover:text-white"><ThumbsDown className="h-4 w-4" /></button>
         <button aria-label="Copy response" className="hover:text-white"><Copy className="h-4 w-4" /></button>
       </div>
+    </>
+  );
+  if (embedded) {
+    return (
+      <div className="text-[#cbd3df]">
+        {body}
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-md border border-[#202936] bg-[#0d131b] px-4 py-3 text-[#cbd3df]">
+      {body}
     </div>
   );
 }
@@ -1123,13 +1353,19 @@ function ChatInput({
 }) {
   return (
     <div className={cn('shrink-0 border-t border-[#222b36]', compact ? 'px-5 py-4' : 'px-8 py-5')}>
-      <div className={cn(compact ? '' : 'mx-auto max-w-[1600px]')}>
+      <div>
         <div className="overflow-hidden rounded-md border border-[#3b4654] bg-[#121922] transition focus-within:border-[#8278ff] focus-within:ring-1 focus-within:ring-[#8278ff]">
           <textarea
             value={prompt}
             maxLength={MAX_PROMPT_LENGTH}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+                event.preventDefault();
+                if (!booting && !busy && prompt.trim()) {
+                  onSend();
+                }
+              }
               if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
                 onSend();
               }
@@ -1559,9 +1795,10 @@ function StatusBadge({ status }: { status: Status }) {
     IN_PROGRESS: 'border-sky-400/30 text-sky-300',
     AWAITING_INPUT: 'border-amber-400/40 text-amber-300',
     COMPLETED: 'border-emerald-400/30 text-emerald-300',
+    SUCCESS: 'border-emerald-400/30 text-emerald-300',
     FAILED: 'border-red-400/30 text-red-300',
   };
-  const Icon = status === 'COMPLETED' ? Check : status === 'FAILED' ? XCircle : Clock;
+  const Icon = status === 'COMPLETED' || status === 'SUCCESS' ? Check : status === 'FAILED' ? XCircle : Clock;
   return (
     <span className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-bold', styles[status])}>
       <Icon className="h-3 w-3" />
@@ -1826,9 +2063,28 @@ function UploadContextDialog({ busy, open, onOpenChange, onUpload }: UploadConte
   );
 }
 
+function buildTimelineItems(events: ChatEvent[]): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  for (const event of events) {
+    const scopeKey = event.type === 'user' ? '' : scopeFromEventId(event.id);
+    if (!scopeKey) {
+      items.push({ id: event.id, kind: 'event', event });
+      continue;
+    }
+    const last = items[items.length - 1];
+    if (last?.kind === 'assistant' && last.scopeKey === scopeKey) {
+      last.events.push(event);
+      continue;
+    }
+    items.push({ id: scopeKey, kind: 'assistant', scopeKey, events: [event] });
+  }
+  return items;
+}
+
 async function turnsToChatEvents(agentSpaceId: string, turns: Turn[]): Promise<ChatEvent[]> {
   const allEvents: ChatEvent[] = [];
   for (const turn of turns) {
+    const scopeKey = turnScope(turn.turnId);
     const events: ChatEvent[] = [
       {
         id: `${turn.turnId}-user`,
@@ -1837,6 +2093,23 @@ async function turnsToChatEvents(agentSpaceId: string, turns: Turn[]): Promise<C
         createdAt: turn.createdAt,
       },
     ];
+    try {
+      const recordPage = await listRecords({
+        agentSpaceId,
+        conversationId: turn.conversationId,
+        turnId: turn.turnId,
+        maxResults: 100,
+      });
+      events.push(...recordsToChatEvents(recordPage.records ?? [], { scopeKey }));
+    } catch {
+      events.push({
+        id: scopedEventId(scopeKey, `${turn.turnId}-record-load-error`),
+        type: 'status',
+        content: `无法加载会话记录：${turn.turnId}`,
+        state: 'error',
+        createdAt: turn.updatedAt,
+      });
+    }
     if (turn.taskId) {
       try {
         const [task, recordPage, artifactPage] = await Promise.all([
@@ -1844,15 +2117,15 @@ async function turnsToChatEvents(agentSpaceId: string, turns: Turn[]): Promise<C
           listRecords({ agentSpaceId, taskId: turn.taskId, maxResults: 100 }),
           listArtifacts(agentSpaceId),
         ]);
-        events.push(...recordsToChatEvents(recordPage.entities ?? []));
-        events.push(taskToChatEvent(task.entity));
+        events.push(...recordsToChatEvents(recordPage.records ?? [], { scopeKey }));
+        events.push(taskToChatEvent(task.entity, scopeKey));
         if (task.entity.status === 'AWAITING_INPUT') {
-          events.push(taskToApprovalEvent(task.entity));
+          events.push(taskToApprovalEvent(task.entity, scopeKey));
         }
-        events.push(...artifactsToChatEvents((artifactPage.entities ?? []).filter((artifact) => artifact.taskId === turn.taskId)));
+        events.push(...artifactsToChatEvents((artifactPage.entities ?? []).filter((artifact) => artifact.taskId === turn.taskId), scopeKey));
       } catch {
         events.push({
-          id: `${turn.turnId}-task-load-error`,
+          id: scopedEventId(scopeKey, `${turn.turnId}-task-load-error`),
           type: 'status',
           content: `无法加载任务记录：${turn.taskId}`,
           state: 'error',
@@ -1860,11 +2133,14 @@ async function turnsToChatEvents(agentSpaceId: string, turns: Turn[]): Promise<C
         });
       }
     }
-    if (turn.response || turn.status === 'FAILED') {
-      events.push(turnToAnswerEvent(turn));
-    } else if (turn.status === 'IN_PROGRESS' || turn.status === 'PENDING') {
+    if (!events.some((event) => event.type === 'answer') && (turn.output?.text || turn.status === 'FAILED')) {
+      const answerEvent = turnToAnswerEvent(turn, scopeKey);
+      if (answerEvent.content) {
+        events.push(answerEvent);
+      }
+    } else if (!isTurnDone(turn) && !events.some((event) => event.type === 'status' && event.state === 'running')) {
       events.push({
-        id: `${turn.turnId}-status`,
+        id: scopedEventId(scopeKey, `${turn.turnId}-status`),
         type: 'status',
         content: 'Thinking...',
         state: 'running',
@@ -1876,41 +2152,157 @@ async function turnsToChatEvents(agentSpaceId: string, turns: Turn[]): Promise<C
   return allEvents;
 }
 
-function recordsToChatEvents(records: RecordEntry[]): ChatEvent[] {
-  return records.map((record) => {
-    if (record.type === 'TOOL_CALL' || record.type === 'TOOL_RESULT') {
-      return {
-        id: record.recordId,
+function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?: string } = {}): ChatEvent[] {
+  const events: ChatEvent[] = [];
+  const processById = new Map<string, Extract<ChatEvent, { type: 'tool' }>>();
+
+  for (const record of records) {
+    if (record.recordType === 'TOOL_CALL' && record.toolCall) {
+      const id = scopedEventId(options.scopeKey, `tool-${record.toolCall.toolUseId || record.recordId}`);
+      const existing = processById.get(id);
+      if (existing) {
+        existing.name = record.toolCall.toolName || existing.name;
+        existing.request = existing.request || prettyPayload(record.toolCall.input);
+        existing.skill = existing.skill || record.toolCall.skill;
+        existing.action = existing.action || record.toolCall.action;
+        continue;
+      }
+      const event: Extract<ChatEvent, { type: 'tool' }> = {
+        id,
         type: 'tool',
-        name: record.metadata?.tool || record.metadata?.runner || 'sre_tool',
-        content: record.content,
-        status: record.type === 'TOOL_RESULT' ? 'result' : 'called',
-        metadata: record.metadata,
+        kind: 'tool',
+        name: record.toolCall.toolName || 'tool',
+        status: 'called',
+        request: prettyPayload(record.toolCall.input),
+        skill: record.toolCall.skill,
+        action: record.toolCall.action,
         createdAt: record.createdAt,
-      } satisfies ChatEvent;
+      };
+      processById.set(id, event);
+      events.push(event);
+      continue;
     }
-    if (record.type === 'ERROR') {
-      return {
-        id: record.recordId,
+
+    if (record.recordType === 'TOOL_RESULT' && record.toolResult) {
+      const id = scopedEventId(options.scopeKey, `tool-${record.toolResult.toolUseId || record.recordId}`);
+      const event = processById.get(id);
+      if (event) {
+        event.status = record.toolResult.isError ? 'error' : 'result';
+        event.response = prettyPayload(record.toolResult.output);
+        event.skill = event.skill || record.toolResult.skill;
+        event.action = event.action || record.toolResult.action;
+      } else {
+        const nextEvent: Extract<ChatEvent, { type: 'tool' }> = {
+          id,
+          type: 'tool',
+          kind: 'tool',
+          name: record.toolResult.action || 'tool',
+          status: record.toolResult.isError ? 'error' : 'result',
+          response: prettyPayload(record.toolResult.output),
+          skill: record.toolResult.skill,
+          action: record.toolResult.action,
+          createdAt: record.createdAt,
+        };
+        processById.set(id, nextEvent);
+        events.push(nextEvent);
+      }
+      continue;
+    }
+
+    if (record.recordType === 'LOAD_SKILL' && record.loadSkill) {
+      const id = scopedEventId(options.scopeKey, `skill-${record.loadSkill.toolUseId || record.recordId}`);
+      const event = processById.get(id);
+      if (event) {
+        event.status = record.loadSkill.output ? 'result' : event.status;
+        event.response = event.response || prettyPayload(record.loadSkill.output);
+        event.skill = event.skill || record.loadSkill.skillName;
+        event.name = record.loadSkill.skillName || event.name;
+      } else {
+        const nextEvent: Extract<ChatEvent, { type: 'tool' }> = {
+          id,
+          type: 'tool',
+          kind: 'skill',
+          name: record.loadSkill.skillName || 'skill',
+          status: record.loadSkill.output ? 'result' : 'called',
+          request: prettyPayload(record.loadSkill.input),
+          response: prettyPayload(record.loadSkill.output),
+          skill: record.loadSkill.skillName,
+          createdAt: record.createdAt,
+        };
+        processById.set(id, nextEvent);
+        events.push(nextEvent);
+      }
+      continue;
+    }
+
+    if (record.recordType === 'LOAD_TOOL' && record.loadTool) {
+      const id = scopedEventId(options.scopeKey, `load-tool-${record.loadTool.toolUseId || record.recordId}`);
+      const event = processById.get(id);
+      if (event) {
+        event.status = record.loadTool.output ? 'result' : event.status;
+        event.response = event.response || prettyPayload(record.loadTool.output);
+      } else {
+        const nextEvent: Extract<ChatEvent, { type: 'tool' }> = {
+          id,
+          type: 'tool',
+          kind: 'resource',
+          name: record.loadTool.toolName || 'resource',
+          status: record.loadTool.output ? 'result' : 'called',
+          request: prettyPayload(record.loadTool.input),
+          response: prettyPayload(record.loadTool.output),
+          createdAt: record.createdAt,
+        };
+        processById.set(id, nextEvent);
+        events.push(nextEvent);
+      }
+      continue;
+    }
+
+    if (record.recordType === 'ERROR') {
+      events.push({
+        id: scopedEventId(options.scopeKey, record.recordId),
         type: 'status',
-        content: record.content,
+        content: record.content || '执行失败',
         state: 'error',
         createdAt: record.createdAt,
-      } satisfies ChatEvent;
+      });
+      continue;
     }
-    return {
-      id: record.recordId,
+
+    if (record.recordType === 'RESPONSE') {
+      const content = cleanAnswerContent(record.content);
+      if (!content) {
+        continue;
+      }
+      events.push({
+        id: scopedEventId(options.scopeKey, `${record.recordId}-answer`),
+        type: 'answer',
+        content,
+        status: 'SUCCESS',
+        createdAt: record.createdAt,
+      });
+      continue;
+    }
+
+    const content = hasToolDetailMarkup(record.content) ? '' : record.content || statusLabelForRecord(record.recordType);
+    if (!content) {
+      continue;
+    }
+    events.push({
+      id: scopedEventId(options.scopeKey, record.recordId),
       type: 'status',
-      content: record.content,
+      content,
       state: 'complete',
       createdAt: record.createdAt,
-    } satisfies ChatEvent;
-  });
+    });
+  }
+
+  return events;
 }
 
-function taskToChatEvent(task: Task): ChatEvent {
+function taskToChatEvent(task: Task, scopeKey?: string): ChatEvent {
   return {
-    id: `${task.taskId}-task-card`,
+    id: scopedEventId(scopeKey, `${task.taskId}-task-card`),
     type: 'task',
     taskId: task.taskId,
     title: task.name || 'NetX SRE Task',
@@ -1920,9 +2312,9 @@ function taskToChatEvent(task: Task): ChatEvent {
   };
 }
 
-function taskToApprovalEvent(task: Task): ChatEvent {
+function taskToApprovalEvent(task: Task, scopeKey?: string): ChatEvent {
   return {
-    id: `${task.taskId}-approval-card`,
+    id: scopedEventId(scopeKey, `${task.taskId}-approval-card`),
     type: 'approval',
     taskId: task.taskId,
     title: task.name || '高风险操作审批',
@@ -1933,9 +2325,9 @@ function taskToApprovalEvent(task: Task): ChatEvent {
   };
 }
 
-function artifactsToChatEvents(artifacts: Artifact[]): ChatEvent[] {
+function artifactsToChatEvents(artifacts: Artifact[], scopeKey?: string): ChatEvent[] {
   return artifacts.map((artifact) => ({
-    id: `${artifact.artifactId}-artifact-card`,
+    id: scopedEventId(scopeKey, `${artifact.artifactId}-artifact-card`),
     type: 'artifact',
     artifactId: artifact.artifactId,
     name: artifact.name,
@@ -1944,21 +2336,45 @@ function artifactsToChatEvents(artifacts: Artifact[]): ChatEvent[] {
   }));
 }
 
-function turnToAnswerEvent(turn: Turn): ChatEvent {
+function turnToAnswerEvent(turn: Turn, scopeKey?: string): Extract<ChatEvent, { type: 'answer' }> {
   return {
-    id: `${turn.turnId}-answer`,
+    id: scopedEventId(scopeKey, `${turn.turnId}-answer`),
     type: 'answer',
-    content: turn.response || '',
+    content: cleanAnswerContent(turn.output?.text || turn.statusReason),
     taskId: turn.taskId,
     status: turn.status,
-    createdAt: turn.updatedAt,
+    createdAt: turn.completedAt || turn.updatedAt,
   };
+}
+
+function turnScope(turnId: string) {
+  return `turn-${turnId}`;
+}
+
+function scopeFromEventId(id: string) {
+  const index = id.indexOf(':');
+  if (index <= 0) return '';
+  const scopeKey = id.slice(0, index);
+  return scopeKey.startsWith('turn-') ? scopeKey : '';
+}
+
+function scopedEventId(scopeKey: string | undefined, id: string) {
+  return scopeKey ? `${scopeKey}:${id}` : id;
 }
 
 function replaceEvent(events: ChatEvent[], targetId: string, replacement: ChatEvent[]) {
   const index = events.findIndex((event) => event.id === targetId);
   if (index < 0) return [...events, ...replacement];
   return [...events.slice(0, index), ...replacement, ...events.slice(index + 1)];
+}
+
+function replaceScopedEvents(events: ChatEvent[], placeholderId: string, scopeKey: string, replacement: ChatEvent[]) {
+  const isTarget = (event: ChatEvent) => event.id === placeholderId || event.id.startsWith(`${scopeKey}:`);
+  const anchorIndex = events.findIndex(isTarget);
+  if (anchorIndex < 0) return [...events, ...replacement];
+  const before = events.slice(0, anchorIndex).filter((event) => !isTarget(event));
+  const after = events.slice(anchorIndex + 1).filter((event) => !isTarget(event));
+  return [...before, ...replacement, ...after];
 }
 
 function updateTaskEvents(events: ChatEvent[], task: Task) {
@@ -1980,15 +2396,91 @@ function titleFromPrompt(value: string) {
   return runes.length > 34 ? `${runes.slice(0, 34).join('')}...` : trimmed;
 }
 
-async function pollTurn(agentSpaceId: string, conversationId: string, turnId: string) {
-  for (let i = 0; i < 40; i += 1) {
-    const turn = await getTurn(agentSpaceId, conversationId, turnId);
-    if (turn.entity.status === 'COMPLETED' || turn.entity.status === 'FAILED') {
-      return turn.entity;
+function isTurnDone(turn: Turn) {
+  return turn.status === 'SUCCESS' || turn.status === 'COMPLETED' || turn.status === 'FAILED';
+}
+
+async function pollTurnRecords({
+  agentSpaceId,
+  conversationId,
+  turnId,
+  onUpdate,
+}: {
+  agentSpaceId: string;
+  conversationId: string;
+  turnId: string;
+  onUpdate: (turn: Turn, records: RecordEntry[]) => void;
+}) {
+  let latestTurn: Turn | null = null;
+  let latestRecords: RecordEntry[] = [];
+  for (let i = 0; i < 80; i += 1) {
+    const [turnPage, recordPage] = await Promise.all([
+      getTurn(agentSpaceId, conversationId, turnId),
+      listRecords({ agentSpaceId, conversationId, turnId, maxResults: 100 }),
+    ]);
+    latestTurn = turnPage.turn;
+    latestRecords = recordPage.records ?? [];
+    onUpdate(latestTurn, latestRecords);
+    if (isTurnDone(latestTurn)) {
+      return latestTurn;
     }
-    await sleep(300);
+    await sleep(400);
+  }
+  if (latestTurn) {
+    onUpdate(latestTurn, latestRecords);
   }
   throw new Error('Turn polling timed out');
+}
+
+function inProgressLabel(records: RecordEntry[]) {
+  const last = records[records.length - 1];
+  if (!last) return 'Thinking...';
+  if (last.recordType === 'TOOL_CALL') return 'Waiting for tool result...';
+  if (last.recordType === 'LOAD_SKILL') return 'Preparing skill context...';
+  if (last.recordType === 'LOAD_TOOL') return 'Loading supporting context...';
+  if (last.recordType === 'TOOL_RESULT') return 'Working on the answer...';
+  return 'Thinking...';
+}
+
+function prettyPayload(value?: string) {
+  if (!value) return '';
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function cleanAnswerContent(value?: string) {
+  if (!value) return '';
+  let cleaned = value
+    .replace(/<details\b[^>]*>\s*<summary>\s*tool_code\s*<\/summary>[\s\S]*?(?:<\/details>|$)/gi, '')
+    .replace(/<details\b[^>]*>\s*<summary>\s*tool_result\s*<\/summary>[\s\S]*?(?:<\/details>|$)/gi, '');
+  if (!/<details\b/i.test(cleaned)) {
+    cleaned = cleaned.replace(/<\/details>/gi, '');
+  }
+  return cleaned.trim();
+}
+
+function hasToolDetailMarkup(value?: string) {
+  if (!value) return false;
+  const lower = value.toLowerCase();
+  return lower.includes('<details') && (lower.includes('tool_code') || lower.includes('tool_result'));
+}
+
+function statusLabelForRecord(recordType: RecordEntry['recordType']) {
+  const labels: Record<RecordEntry['recordType'], string> = {
+    RESPONSE: 'Response ready',
+    TOOL_CALL: 'Tool called',
+    TOOL_RESULT: 'Tool result received',
+    MEMORY_ACCESS: 'Memory accessed',
+    LOAD_SKILL: 'Skill loaded',
+    LOAD_TOOL: 'Tool context loaded',
+    THINKING: 'Thinking...',
+    STATUS: 'Status updated',
+    ERROR: 'Error',
+  };
+  return labels[recordType];
 }
 
 async function pollTask(agentSpaceId: string, taskId: string) {

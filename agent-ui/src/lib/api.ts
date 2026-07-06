@@ -1,4 +1,4 @@
-export type Status = 'PENDING' | 'IN_PROGRESS' | 'AWAITING_INPUT' | 'COMPLETED' | 'FAILED';
+export type Status = 'PENDING' | 'IN_PROGRESS' | 'AWAITING_INPUT' | 'COMPLETED' | 'SUCCESS' | 'FAILED';
 
 export interface AgentSpace {
   agentSpaceId: string;
@@ -35,19 +35,58 @@ export interface Conversation {
   updatedAt?: string;
 }
 
+export interface TurnOutput {
+  artifactIds: string[];
+  text: string;
+}
+
 export interface Turn {
   turnId: string;
   conversationId: string;
   agentSpaceId: string;
   status: Status;
+  statusReason?: string;
   prompt: string;
-  response?: string;
+  documentIds?: string[];
+  output?: TurnOutput | null;
+  pendingAgentRequests?: unknown;
   taskId?: string;
   createdAt?: string;
   updatedAt?: string;
+  completedAt?: string;
 }
 
-export type RecordType = 'RESPONSE' | 'TOOL_CALL' | 'TOOL_RESULT' | 'MEMORY_ACCESS' | 'STATUS' | 'ERROR';
+export type RecordType = 'RESPONSE' | 'TOOL_CALL' | 'TOOL_RESULT' | 'MEMORY_ACCESS' | 'LOAD_SKILL' | 'LOAD_TOOL' | 'THINKING' | 'STATUS' | 'ERROR';
+
+export interface ToolCallRecord {
+  input: string;
+  toolName: string;
+  toolUseId: string;
+  skill?: string;
+  action?: string;
+}
+
+export interface ToolResultRecord {
+  output: string;
+  toolUseId: string;
+  skill?: string;
+  action?: string;
+  isError: boolean;
+}
+
+export interface LoadSkillRecord {
+  skillName: string;
+  input?: string;
+  output?: string;
+  toolUseId?: string;
+}
+
+export interface LoadToolRecord {
+  toolName: string;
+  input?: string;
+  output?: string;
+  toolUseId?: string;
+}
 
 export interface RecordEntry {
   recordId: string;
@@ -55,9 +94,13 @@ export interface RecordEntry {
   taskId?: string;
   conversationId?: string;
   turnId?: string;
-  type: RecordType;
-  content: string;
-  metadata?: Record<string, string>;
+  recordType: RecordType;
+  content?: string;
+  modelId?: string;
+  toolCall?: ToolCallRecord | null;
+  toolResult?: ToolResultRecord | null;
+  loadSkill?: LoadSkillRecord | null;
+  loadTool?: LoadToolRecord | null;
   createdAt: string;
 }
 
@@ -105,9 +148,18 @@ export interface EntityResponse<T> {
   entity: T;
 }
 
+export interface TurnResponse {
+  turn: Turn;
+}
+
 export interface PageResponse<T> {
   entities: T[] | null;
   nextToken?: string;
+}
+
+export interface RecordsResponse {
+  records: RecordEntry[] | null;
+  nextToken?: string | null;
 }
 
 export interface CreateAgentSpaceInput {
@@ -174,7 +226,7 @@ export function deleteConversation(agentSpaceId: string, conversationId: string)
 }
 
 export function createTurn(agentSpaceId: string, conversationId: string, prompt: string) {
-  return post<EntityResponse<Turn>>('/createTurn', {
+  return post<TurnResponse>('/createTurn', {
     agentSpaceId,
     conversationId,
     prompt,
@@ -182,7 +234,7 @@ export function createTurn(agentSpaceId: string, conversationId: string, prompt:
 }
 
 export function getTurn(agentSpaceId: string, conversationId: string, turnId: string) {
-  return post<EntityResponse<Turn>>('/getTurn', {
+  return post<TurnResponse>('/getTurn', {
     agentSpaceId,
     conversationId,
     turnId,
@@ -228,7 +280,7 @@ export function listRecords(input: {
   turnId?: string;
   maxResults?: number;
 }) {
-  return post<PageResponse<RecordEntry>>('/listRecords', {
+  return post<RecordsResponse>('/listRecords', {
     maxResults: 100,
     ...input,
   });
@@ -258,8 +310,10 @@ export async function createDocument(agentSpaceId: string, file: File) {
   });
 }
 
+const API_PREFIX = '/api/v1';
+
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(`${API_PREFIX}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

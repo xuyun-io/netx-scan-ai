@@ -291,51 +291,51 @@ AgentSpace（Agent 工作空间）
 
 | 端点 | 说明 |
 |------|------|
-| `POST /createAgentSpace` | 创建 Agent |
-| `POST /listAgentSpaces` | 列出 Agent |
-| `POST /getAgentSpace` | 获取 Agent 信息 |
-| `POST /deleteAgentSpace` | 删除 Agent |
+| `POST /api/v1/createAgentSpace` | 创建 Agent |
+| `POST /api/v1/listAgentSpaces` | 列出 Agent |
+| `POST /api/v1/getAgentSpace` | 获取 Agent 信息 |
+| `POST /api/v1/deleteAgentSpace` | 删除 Agent |
 
 #### Conversation / Turn
 
 | 端点 | 说明 |
 |------|------|
-| `POST /createConversation` | 创建会话 |
-| `POST /listConversations` | 列出会话 |
-| `POST /getConversation` | 获取会话 |
-| `POST /createTurn` | 创建轮次（异步，202） |
-| `POST /getTurn` | 获取轮次状态/结果 |
+| `POST /api/v1/createConversation` | 创建会话 |
+| `POST /api/v1/listConversations` | 列出会话 |
+| `POST /api/v1/getConversation` | 获取会话 |
+| `POST /api/v1/createTurn` | 创建轮次（异步，202） |
+| `POST /api/v1/getTurn` | 获取轮次状态/结果 |
 
 #### Task
 
 | 端点 | 说明 |
 |------|------|
-| `POST /createTask` | 创建任务（异步，202） |
-| `POST /getTask` | 获取任务状态 |
-| `POST /listTasks` | 列出任务 |
-| `POST /respondToTask` | 审批/响应任务（从 AWAITING_INPUT 继续） |
+| `POST /api/v1/createTask` | 创建任务（异步，202） |
+| `POST /api/v1/getTask` | 获取任务状态 |
+| `POST /api/v1/listTasks` | 列出任务 |
+| `POST /api/v1/respondToTask` | 审批/响应任务（从 AWAITING_INPUT 继续） |
 
 #### Record
 
 | 端点 | 说明 |
 |------|------|
-| `POST /listRecords` | 列出执行记录 |
+| `POST /api/v1/listRecords` | 列出执行记录 |
 
 #### Artifact
 
 | 端点 | 说明 |
 |------|------|
-| `POST /listArtifacts` | 列出产物 |
-| `POST /getArtifact` | 获取产物（返回下载 URL 或内容） |
+| `POST /api/v1/listArtifacts` | 列出产物 |
+| `POST /api/v1/getArtifact` | 获取产物（返回下载 URL 或内容） |
 
 #### Document（Context files）
 
 | 端点 | 说明 |
 |------|------|
-| `POST /createDocument` | 上传上下文文件（202） |
-| `POST /listDocuments` | 列出上下文文件 |
-| `POST /getDocument` | 获取上下文文件信息 |
-| `POST /deleteDocument` | 删除上下文文件 |
+| `POST /api/v1/createDocument` | 上传上下文文件（202） |
+| `POST /api/v1/listDocuments` | 列出上下文文件 |
+| `POST /api/v1/getDocument` | 获取上下文文件信息 |
+| `POST /api/v1/deleteDocument` | 删除上下文文件 |
 
 ---
 

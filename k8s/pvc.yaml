@@ -1,0 +1,16 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netx-scan-ai-data
+  namespace: nss
+  labels:
+    app: netx-scan-ai
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # 使用 EKS 默认存储类；如需指定，可改为 gp3 / gp2
+  storageClassName: gp3

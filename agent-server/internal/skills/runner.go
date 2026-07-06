@@ -32,6 +32,7 @@ type ActionResult struct {
 	Skill       string         `json:"skill"`
 	Action      string         `json:"action"`
 	Description string         `json:"description,omitempty"`
+	Command     string         `json:"command,omitempty"`
 	ReadOnly    bool           `json:"readonly"`
 	Approval    bool           `json:"approval"`
 	Stdout      string         `json:"stdout,omitempty"`
@@ -143,6 +144,7 @@ func (r *Runner) RunWithEnv(ctx context.Context, skillName, actionName string, v
 	cleanStdout := sanitize(stdout.String(), cmd.Env)
 	cleanStderr := sanitize(stderr.String(), cmd.Env)
 	result.Description = action.Description
+	result.Command = action.Command
 	result.ReadOnly = action.ReadOnly
 	result.Approval = action.Approval
 	result.Stdout = strings.TrimSpace(cleanStdout)

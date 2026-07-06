@@ -7,6 +7,7 @@ const (
 	StatusInProgress    = "IN_PROGRESS"
 	StatusAwaitingInput = "AWAITING_INPUT"
 	StatusCompleted     = "COMPLETED"
+	StatusSuccess       = "SUCCESS"
 	StatusFailed        = "FAILED"
 	StatusInactive      = "INACTIVE"
 	StatusActive        = "ACTIVE"
@@ -15,6 +16,9 @@ const (
 	RecordToolCall     = "TOOL_CALL"
 	RecordToolResult   = "TOOL_RESULT"
 	RecordMemoryAccess = "MEMORY_ACCESS"
+	RecordLoadSkill    = "LOAD_SKILL"
+	RecordLoadTool     = "LOAD_TOOL"
+	RecordThinking     = "THINKING"
 	RecordStatus       = "STATUS"
 	RecordError        = "ERROR"
 
@@ -60,16 +64,25 @@ type Conversation struct {
 	UpdatedAt    time.Time `json:"updatedAt" yaml:"updatedAt"`
 }
 
+type TurnOutput struct {
+	ArtifactIDs []string `json:"artifactIds" yaml:"artifactIds"`
+	Text        string   `json:"text" yaml:"text"`
+}
+
 type Turn struct {
-	ID             string    `json:"turnId" yaml:"turnId"`
-	ConversationID string    `json:"conversationId" yaml:"conversationId"`
-	AgentSpaceID   string    `json:"agentSpaceId" yaml:"agentSpaceId"`
-	Status         string    `json:"status" yaml:"status"`
-	Prompt         string    `json:"prompt" yaml:"prompt"`
-	Response       string    `json:"response,omitempty" yaml:"response,omitempty"`
-	TaskID         string    `json:"taskId,omitempty" yaml:"taskId,omitempty"`
-	CreatedAt      time.Time `json:"createdAt" yaml:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt" yaml:"updatedAt"`
+	ID                   string      `json:"turnId" yaml:"turnId"`
+	ConversationID       string      `json:"conversationId" yaml:"conversationId"`
+	AgentSpaceID         string      `json:"agentSpaceId" yaml:"agentSpaceId"`
+	Status               string      `json:"status" yaml:"status"`
+	StatusReason         string      `json:"statusReason,omitempty" yaml:"statusReason,omitempty"`
+	Prompt               string      `json:"prompt" yaml:"prompt"`
+	DocumentIDs          []string    `json:"documentIds" yaml:"documentIds"`
+	Output               *TurnOutput `json:"output" yaml:"output,omitempty"`
+	PendingAgentRequests any         `json:"pendingAgentRequests" yaml:"pendingAgentRequests,omitempty"`
+	TaskID               string      `json:"taskId,omitempty" yaml:"taskId,omitempty"`
+	CreatedAt            time.Time   `json:"createdAt" yaml:"createdAt"`
+	UpdatedAt            time.Time   `json:"updatedAt" yaml:"updatedAt"`
+	CompletedAt          *time.Time  `json:"completedAt" yaml:"completedAt,omitempty"`
 }
 
 type Task struct {
@@ -99,15 +112,63 @@ type Task struct {
 }
 
 type Record struct {
-	ID             string            `json:"recordId" yaml:"recordId"`
-	AgentSpaceID   string            `json:"agentSpaceId" yaml:"agentSpaceId"`
-	TaskID         string            `json:"taskId,omitempty" yaml:"taskId,omitempty"`
-	ConversationID string            `json:"conversationId,omitempty" yaml:"conversationId,omitempty"`
-	TurnID         string            `json:"turnId,omitempty" yaml:"turnId,omitempty"`
-	Type           string            `json:"type" yaml:"type"`
-	Content        string            `json:"content" yaml:"content"`
-	Metadata       map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
-	CreatedAt      time.Time         `json:"createdAt" yaml:"createdAt"`
+	ID             string          `json:"recordId" yaml:"recordId"`
+	AgentSpaceID   string          `json:"agentSpaceId" yaml:"agentSpaceId"`
+	TaskID         string          `json:"taskId,omitempty" yaml:"taskId,omitempty"`
+	ConversationID string          `json:"conversationId,omitempty" yaml:"conversationId,omitempty"`
+	TurnID         string          `json:"turnId,omitempty" yaml:"turnId,omitempty"`
+	Type           string          `json:"recordType" yaml:"recordType"`
+	Content        string          `json:"content,omitempty" yaml:"content,omitempty"`
+	ModelID        string          `json:"modelId,omitempty" yaml:"modelId,omitempty"`
+	TokenCount     *int            `json:"tokenCount,omitempty" yaml:"tokenCount,omitempty"`
+	Artifact       *RecordArtifact `json:"artifact,omitempty" yaml:"artifact,omitempty"`
+	ToolCall       *ToolCall       `json:"toolCall,omitempty" yaml:"toolCall,omitempty"`
+	ToolResult     *ToolResult     `json:"toolResult,omitempty" yaml:"toolResult,omitempty"`
+	LoadSkill      *LoadSkill      `json:"loadSkill,omitempty" yaml:"loadSkill,omitempty"`
+	LoadTool       *LoadTool       `json:"loadTool,omitempty" yaml:"loadTool,omitempty"`
+	MemoryAccess   *MemoryAccess   `json:"memoryAccess,omitempty" yaml:"memoryAccess,omitempty"`
+	CreatedAt      time.Time       `json:"createdAt" yaml:"createdAt"`
+}
+
+type ToolCall struct {
+	Input     string `json:"input" yaml:"input"`
+	ToolName  string `json:"toolName" yaml:"toolName"`
+	ToolUseID string `json:"toolUseId" yaml:"toolUseId"`
+	Skill     string `json:"skill,omitempty" yaml:"skill,omitempty"`
+	Action    string `json:"action,omitempty" yaml:"action,omitempty"`
+}
+
+type ToolResult struct {
+	Output    string `json:"output" yaml:"output"`
+	ToolUseID string `json:"toolUseId" yaml:"toolUseId"`
+	Skill     string `json:"skill,omitempty" yaml:"skill,omitempty"`
+	Action    string `json:"action,omitempty" yaml:"action,omitempty"`
+	IsError   bool   `json:"isError" yaml:"isError"`
+}
+
+type LoadSkill struct {
+	SkillName string `json:"skillName" yaml:"skillName"`
+	Input     string `json:"input,omitempty" yaml:"input,omitempty"`
+	Output    string `json:"output,omitempty" yaml:"output,omitempty"`
+	ToolUseID string `json:"toolUseId,omitempty" yaml:"toolUseId,omitempty"`
+}
+
+type LoadTool struct {
+	ToolName  string `json:"toolName" yaml:"toolName"`
+	Input     string `json:"input,omitempty" yaml:"input,omitempty"`
+	Output    string `json:"output,omitempty" yaml:"output,omitempty"`
+	ToolUseID string `json:"toolUseId,omitempty" yaml:"toolUseId,omitempty"`
+}
+
+type MemoryAccess struct {
+	Operation string `json:"operation,omitempty" yaml:"operation,omitempty"`
+	Content   string `json:"content,omitempty" yaml:"content,omitempty"`
+}
+
+type RecordArtifact struct {
+	ArtifactID string `json:"artifactId,omitempty" yaml:"artifactId,omitempty"`
+	Name       string `json:"name,omitempty" yaml:"name,omitempty"`
+	Type       string `json:"type,omitempty" yaml:"type,omitempty"`
 }
 
 type Artifact struct {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -56,6 +57,7 @@ func (s *Service) CreateTurn(ctx context.Context, agentSpaceID, conversationID, 
 		AgentSpaceID:   agentSpaceID,
 		Status:         model.StatusInProgress,
 		Prompt:         prompt,
+		DocumentIDs:    []string{},
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -219,17 +221,20 @@ func (s *Service) ExecuteTask(agentSpaceID, taskID string) {
 		CreatedAt:    completedAt,
 	})
 	if task.ConversationID != "" && task.TurnID != "" {
-		s.updateLinkedTurn(ctx, task, response, model.StatusCompleted, completedAt)
+		s.updateLinkedTurn(ctx, task, response, model.StatusSuccess, completedAt)
 	}
 }
 
 func (s *Service) processTurn(turn model.Turn) {
 	ctx := context.Background()
 	response, err := s.runADKTurn(ctx, turn)
+	completedAt := time.Now().UTC()
 	if err != nil {
 		turn.Status = model.StatusFailed
-		turn.Response = err.Error()
-		turn.UpdatedAt = time.Now().UTC()
+		turn.StatusReason = err.Error()
+		turn.Output = &model.TurnOutput{ArtifactIDs: []string{}, Text: err.Error()}
+		turn.CompletedAt = &completedAt
+		turn.UpdatedAt = completedAt
 		_ = s.store.UpdateTurn(ctx, turn)
 		_ = s.store.AppendConversationRecord(ctx, model.Record{
 			ID:             store.NewRecordID(),
@@ -242,9 +247,11 @@ func (s *Service) processTurn(turn model.Turn) {
 		})
 		return
 	}
-	turn.Status = model.StatusCompleted
-	turn.Response = response
-	turn.UpdatedAt = time.Now().UTC()
+	response = sanitizeFinalText(response)
+	turn.Status = model.StatusSuccess
+	turn.Output = &model.TurnOutput{ArtifactIDs: []string{}, Text: response}
+	turn.CompletedAt = &completedAt
+	turn.UpdatedAt = completedAt
 	_ = s.store.UpdateTurn(ctx, turn)
 	_ = s.store.AppendConversationRecord(ctx, model.Record{
 		ID:             store.NewRecordID(),
@@ -252,7 +259,7 @@ func (s *Service) processTurn(turn model.Turn) {
 		ConversationID: turn.ConversationID,
 		TurnID:         turn.ID,
 		Type:           model.RecordResponse,
-		Content:        turn.Response,
+		Content:        response,
 		CreatedAt:      turn.UpdatedAt,
 	})
 }
@@ -312,7 +319,7 @@ func (s *Service) runADKPrompt(ctx context.Context, agentSpaceID, sessionID, pro
 		}
 		if event.IsFinalResponse() {
 			if text := textFromContent(event.Content); text != "" {
-				finalText = text
+				finalText = sanitizeFinalText(text)
 			}
 		}
 	}
@@ -347,38 +354,16 @@ func (s *Service) appendADKEventRecord(ctx context.Context, turn model.Turn, eve
 		return
 	}
 	for _, part := range event.Content.Parts {
-		switch {
-		case part.FunctionCall != nil:
-			_ = s.store.AppendConversationRecord(ctx, model.Record{
-				ID:             store.NewRecordID(),
-				AgentSpaceID:   turn.AgentSpaceID,
-				ConversationID: turn.ConversationID,
-				TurnID:         turn.ID,
-				Type:           model.RecordToolCall,
-				Content:        part.FunctionCall.Name,
-				Metadata: map[string]string{
-					"author": event.Author,
-					"callId": part.FunctionCall.ID,
-					"args":   fmt.Sprint(part.FunctionCall.Args),
-				},
-				CreatedAt: time.Now().UTC(),
-			})
-		case part.FunctionResponse != nil:
-			_ = s.store.AppendConversationRecord(ctx, model.Record{
-				ID:             store.NewRecordID(),
-				AgentSpaceID:   turn.AgentSpaceID,
-				ConversationID: turn.ConversationID,
-				TurnID:         turn.ID,
-				Type:           model.RecordToolResult,
-				Content:        part.FunctionResponse.Name,
-				Metadata: map[string]string{
-					"author":   event.Author,
-					"callId":   part.FunctionResponse.ID,
-					"response": fmt.Sprint(part.FunctionResponse.Response),
-				},
-				CreatedAt: time.Now().UTC(),
-			})
+		record, ok := adkPartToRecord(part, event, event.IsFinalResponse())
+		if !ok {
+			continue
 		}
+		record.ID = store.NewRecordID()
+		record.AgentSpaceID = turn.AgentSpaceID
+		record.ConversationID = turn.ConversationID
+		record.TurnID = turn.ID
+		record.CreatedAt = time.Now().UTC()
+		_ = s.store.AppendConversationRecord(ctx, record)
 	}
 }
 
@@ -387,36 +372,180 @@ func (s *Service) appendADKTaskEventRecord(ctx context.Context, task model.Task,
 		return
 	}
 	for _, part := range event.Content.Parts {
-		switch {
-		case part.FunctionCall != nil:
-			_ = s.store.AppendTaskRecord(ctx, model.Record{
-				ID:           store.NewRecordID(),
-				AgentSpaceID: task.AgentSpaceID,
-				TaskID:       task.ID,
-				Type:         model.RecordToolCall,
-				Content:      part.FunctionCall.Name,
-				Metadata: map[string]string{
-					"author": event.Author,
-					"callId": part.FunctionCall.ID,
-					"args":   fmt.Sprint(part.FunctionCall.Args),
-				},
-				CreatedAt: time.Now().UTC(),
-			})
-		case part.FunctionResponse != nil:
-			_ = s.store.AppendTaskRecord(ctx, model.Record{
-				ID:           store.NewRecordID(),
-				AgentSpaceID: task.AgentSpaceID,
-				TaskID:       task.ID,
-				Type:         model.RecordToolResult,
-				Content:      part.FunctionResponse.Name,
-				Metadata: map[string]string{
-					"author":   event.Author,
-					"callId":   part.FunctionResponse.ID,
-					"response": fmt.Sprint(part.FunctionResponse.Response),
-				},
-				CreatedAt: time.Now().UTC(),
-			})
+		record, ok := adkPartToRecord(part, event, event.IsFinalResponse())
+		if !ok {
+			continue
 		}
+		record.ID = store.NewRecordID()
+		record.AgentSpaceID = task.AgentSpaceID
+		record.TaskID = task.ID
+		record.CreatedAt = time.Now().UTC()
+		_ = s.store.AppendTaskRecord(ctx, record)
+	}
+}
+
+func adkPartToRecord(part *genai.Part, event *adksession.Event, finalResponse bool) (model.Record, bool) {
+	if part == nil {
+		return model.Record{}, false
+	}
+	switch {
+	case strings.TrimSpace(part.Text) != "":
+		if finalResponse && !part.Thought {
+			return model.Record{}, false
+		}
+		content := strings.TrimSpace(part.Text)
+		if !part.Thought && containsToolDetails(content) {
+			return model.Record{}, false
+		}
+		recordType := model.RecordStatus
+		if part.Thought {
+			recordType = model.RecordThinking
+		}
+		return model.Record{
+			Type:      recordType,
+			Content:   content,
+			ModelID:   event.ModelVersion,
+			CreatedAt: time.Now().UTC(),
+		}, true
+	case part.FunctionCall != nil:
+		return functionCallRecord(part.FunctionCall, event), true
+	case part.FunctionResponse != nil:
+		record, ok := functionResponseRecord(part.FunctionResponse, event)
+		return record, ok
+	default:
+		return model.Record{}, false
+	}
+}
+
+func functionCallRecord(call *genai.FunctionCall, event *adksession.Event) model.Record {
+	input := jsonString(call.Args)
+	if call.Name == "load_skill" {
+		return model.Record{
+			Type:    model.RecordLoadSkill,
+			ModelID: event.ModelVersion,
+			LoadSkill: &model.LoadSkill{
+				SkillName: stringValue(call.Args, "name"),
+				Input:     input,
+				ToolUseID: call.ID,
+			},
+		}
+	}
+	if call.Name == "list_skills" || call.Name == "load_skill_resource" {
+		return model.Record{
+			Type:    model.RecordLoadTool,
+			ModelID: event.ModelVersion,
+			LoadTool: &model.LoadTool{
+				ToolName:  call.Name,
+				Input:     input,
+				ToolUseID: call.ID,
+			},
+		}
+	}
+	toolCall := &model.ToolCall{
+		Input:     input,
+		ToolName:  call.Name,
+		ToolUseID: call.ID,
+	}
+	if call.Name == skills.ExecuteActionToolName {
+		if input, ok := parseExecuteActionInput(call.Args); ok {
+			toolCall.Skill = input.Skill
+			toolCall.Action = input.Action
+			toolCall.ToolName = input.Action
+		}
+	}
+	return model.Record{
+		Type:     model.RecordToolCall,
+		ModelID:  event.ModelVersion,
+		ToolCall: toolCall,
+	}
+}
+
+func functionResponseRecord(response *genai.FunctionResponse, event *adksession.Event) (model.Record, bool) {
+	output := jsonString(response.Response)
+	if response.Name == "load_skill" {
+		return model.Record{
+			Type:    model.RecordLoadSkill,
+			ModelID: event.ModelVersion,
+			LoadSkill: &model.LoadSkill{
+				SkillName: firstNonEmpty(stringValue(response.Response, "skill_name"), stringValue(response.Response, "name")),
+				Output:    output,
+				ToolUseID: response.ID,
+			},
+		}, true
+	}
+	if response.Name == "list_skills" || response.Name == "load_skill_resource" {
+		return model.Record{
+			Type:    model.RecordLoadTool,
+			ModelID: event.ModelVersion,
+			LoadTool: &model.LoadTool{
+				ToolName:  response.Name,
+				Output:    output,
+				ToolUseID: response.ID,
+			},
+		}, true
+	}
+	toolResult := &model.ToolResult{
+		Output:    output,
+		ToolUseID: response.ID,
+		IsError:   false,
+	}
+	if response.Name == skills.ExecuteActionToolName {
+		if output, ok := parseExecuteActionOutput(response.Response); ok {
+			toolResult.Skill = output.Skill
+			toolResult.Action = output.Action
+		}
+	}
+	return model.Record{
+		Type:       model.RecordToolResult,
+		ModelID:    event.ModelVersion,
+		ToolResult: toolResult,
+	}, true
+}
+
+func parseExecuteActionInput(args any) (skills.ExecuteActionInput, bool) {
+	var input skills.ExecuteActionInput
+	switch v := args.(type) {
+	case skills.ExecuteActionInput:
+		return v, true
+	case map[string]any:
+		input.Skill, _ = v["skill"].(string)
+		input.Action, _ = v["action"].(string)
+		if vars, ok := v["vars"].(map[string]any); ok {
+			input.Vars = make(map[string]string, len(vars))
+			for key, val := range vars {
+				if s, ok := val.(string); ok {
+					input.Vars[key] = s
+				}
+			}
+		}
+		return input, input.Skill != "" && input.Action != ""
+	default:
+		return input, false
+	}
+}
+
+func parseExecuteActionOutput(response any) (skills.ExecuteActionOutput, bool) {
+	var output skills.ExecuteActionOutput
+	switch v := response.(type) {
+	case skills.ExecuteActionOutput:
+		return v, true
+	case map[string]any:
+		if result, ok := v["result"].(map[string]any); ok {
+			v = result
+		}
+		output.Skill, _ = v["skill"].(string)
+		output.Action, _ = v["action"].(string)
+		output.Description, _ = v["description"].(string)
+		output.Command, _ = v["command"].(string)
+		if ro, ok := v["readonly"].(bool); ok {
+			output.ReadOnly = ro
+		}
+		if ap, ok := v["approval"].(bool); ok {
+			output.Approval = ap
+		}
+		return output, output.Skill != "" && output.Action != ""
+	default:
+		return output, false
 	}
 }
 
@@ -429,12 +558,59 @@ func textFromContent(content *genai.Content) string {
 		if strings.TrimSpace(part.Text) == "" {
 			continue
 		}
+		if part.Thought {
+			continue
+		}
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
 		b.WriteString(part.Text)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func sanitizeFinalText(text string) string {
+	result := strings.TrimSpace(text)
+	for searchFrom := 0; searchFrom < len(result); {
+		lower := strings.ToLower(result)
+		relativeStart := strings.Index(lower[searchFrom:], "<details")
+		if relativeStart < 0 {
+			break
+		}
+		start := searchFrom + relativeStart
+		closeAt := strings.Index(lower[start:], "</details>")
+		end := len(result)
+		if closeAt >= 0 {
+			end = start + closeAt + len("</details>")
+		}
+		block := lower[start:end]
+		if strings.Contains(block, "tool_code") || strings.Contains(block, "tool_result") {
+			result = strings.TrimSpace(result[:start] + result[end:])
+			searchFrom = start
+			continue
+		}
+		if closeAt < 0 {
+			break
+		}
+		searchFrom = end
+	}
+	for {
+		lower := strings.ToLower(result)
+		start := strings.Index(lower, "</details>")
+		if start < 0 {
+			break
+		}
+		if strings.Contains(lower[:start], "<details") {
+			break
+		}
+		result = strings.TrimSpace(result[:start] + result[start+len("</details>"):])
+	}
+	return strings.TrimSpace(result)
+}
+
+func containsToolDetails(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "<details") && (strings.Contains(lower, "tool_code") || strings.Contains(lower, "tool_result"))
 }
 
 func requiresApproval(instruction string) bool {
@@ -448,7 +624,7 @@ func requiresApproval(instruction string) bool {
 	return false
 }
 
-func (s *Service) updateLinkedTurn(ctx context.Context, task model.Task, response, status string, updatedAt time.Time) {
+func (s *Service) updateLinkedTurn(ctx context.Context, task model.Task, response string, status string, updatedAt time.Time) {
 	if task.ConversationID == "" || task.TurnID == "" {
 		return
 	}
@@ -458,7 +634,11 @@ func (s *Service) updateLinkedTurn(ctx context.Context, task model.Task, respons
 	}
 	turn.Status = status
 	turn.TaskID = task.ID
-	turn.Response = response
+	turn.Output = &model.TurnOutput{
+		ArtifactIDs: task.Artifacts,
+		Text:        response,
+	}
+	turn.CompletedAt = &updatedAt
 	turn.UpdatedAt = updatedAt
 	_ = s.store.UpdateTurn(ctx, turn)
 	_ = s.store.AppendConversationRecord(ctx, model.Record{
@@ -471,6 +651,34 @@ func (s *Service) updateLinkedTurn(ctx context.Context, task model.Task, respons
 		Content:        response,
 		CreatedAt:      updatedAt,
 	})
+}
+
+func jsonString(value any) string {
+	if value == nil {
+		return "{}"
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(data)
+}
+
+func stringValue(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func renderADKTaskArtifact(task model.Task, response string) string {

@@ -1,11 +1,84 @@
 version: "1"
 actions:
-  latest_block:
-    description: Query the latest Chain287 block number using Foundry cast.
+  block_height:
+    description: Query the latest Chain287 block number.
     readonly: true
     approval: false
     timeoutSeconds: 20
-    command: scripts/cast-query.sh
+    command: scripts/chain-basic.sh
+    args:
+      - block_height
+
+  latest_block:
+    description: Alias for block_height. Kept for backward compatibility.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-basic.sh
     args:
       - latest_block
 
+  chain_id:
+    description: Query Chain287 chain ID.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-basic.sh
+    args:
+      - chain_id
+
+  rpc_alive:
+    description: Check whether the Chain287 RPC endpoint is reachable and measure latency.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-basic.sh
+    args:
+      - rpc_alive
+
+  genesis_hash:
+    description: Query the Chain287 genesis block hash.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-basic.sh
+    args:
+      - genesis_hash
+
+  recent_blocks:
+    description: Analyze the most recent N blocks (miner distribution, interval, gas, tx count). Default 10, max 200.
+    readonly: true
+    approval: false
+    timeoutSeconds: 60
+    command: scripts/chain-analytics.sh
+    args:
+      - recent_blocks
+      - ${count}
+
+  chain_health:
+    description: Aggregate chain health (RPC alive, block age, interval, peer count, active validators).
+    readonly: true
+    approval: false
+    timeoutSeconds: 60
+    command: scripts/chain-analytics.sh
+    args:
+      - chain_health
+      - ${sample}
+
+  active_validators:
+    description: Read the current active validator set from BSCValidatorSet.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/validator-node.sh
+    args:
+      - active_validators
+
+  peer_count:
+    description: Query the RPC node's peer count.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/validator-node.sh
+    args:
+      - peer_count

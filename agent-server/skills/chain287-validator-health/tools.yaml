@@ -1,0 +1,29 @@
+version: "1"
+actions:
+  validator_block_stats:
+    description: 统计最近 N 个块中每个活跃验证者的出块数量，识别漏块节点。
+    readonly: true
+    approval: false
+    timeoutSeconds: 90
+    command: scripts/validator-block-stats.sh
+    args:
+      - validator_block_stats
+      - ${sample}
+
+  validator_rewards:
+    description: 读取每个已注册验证者的 StakeCredit Pool 总额，计算累计奖励。
+    readonly: true
+    approval: false
+    timeoutSeconds: 60
+    command: scripts/validator-rewards.sh
+    args:
+      - validator_rewards
+
+  validator_jailed_status:
+    description: 检查每个已注册验证者是否处于活跃、被 jail 或未入集状态。
+    readonly: true
+    approval: false
+    timeoutSeconds: 60
+    command: scripts/validator-jailed-status.sh
+    args:
+      - validator_jailed_status

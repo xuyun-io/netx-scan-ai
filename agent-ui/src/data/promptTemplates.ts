@@ -37,35 +37,35 @@ export interface ResourceColumn {
 export const promptTemplates: PromptTemplate[] = [
   {
     id: '1',
-    text: 'Find validator nodes with abnormal block production and create an HTML report.',
+    text: '列出 Chain287 常用只读巡检命令，我是区块链新人。',
   },
   {
     id: '2',
-    text: 'Check NetX Chain RPC latency and peer count every 12 hours.',
+    text: '检查 Chain287 RPC 快照、同步状态、peer 数和链上模式。',
   },
   {
     id: '3',
-    text: 'Investigate sync anomalies in the last 7 days. Correlate logs, peer connections, and validator uptime.',
+    text: '给我 Chain287 验证者总览，采样最近 80 个块。',
   },
   {
     id: '4',
-    text: 'Automate validator health alerts for peerCount below 3 and post to Slack #netx-alerts.',
+    text: '检查 Chain287 最近 120 个块是否有验证者出块异常。',
   },
   {
     id: '5',
-    text: 'What was validator performance in June 2026, and how did it change compared to the prior month?',
+    text: '统计 Chain287 最近 10 分钟验证者出块、tx、gasUsed 和余额变化。',
   },
   {
     id: '6',
-    text: 'Summarize node resource trends and recovery opportunities in an executive-ready report in ppt.',
+    text: '查询一个 Chain287 地址 0x... 的余额和 nonce。',
   },
   {
     id: '7',
-    text: 'Do I have any validators at risk of being jailed? What are the recovery procedures?',
+    text: '查询一笔 Chain287 交易 0x... 的详情和 receipt。',
   },
   {
     id: '8',
-    text: 'Create a Jira ticket in space ENG summarizing validator anomalies and recommended actions per instance.',
+    text: '检查 Chain287 是否有验证者 jailed、未入集或未正常出块。',
   },
 ];
 
@@ -128,11 +128,11 @@ export const emptyTableConfig: Record<Exclude<WorkspaceView, 'chat'>, EmptyTable
   tasks: {
     title: 'No tasks found',
     description: 'Status changes from tasks delegated to the NetX SRE Agent will appear here.',
-    action: 'Create tasks',
+    action: 'Create task',
   },
   automations: {
     title: 'No automations',
-    description: 'Create an automation to run tasks on a schedule or in response to events.',
+    description: 'Create an automation to run tasks on a schedule.',
     action: 'Create automation',
   },
   artifacts: {

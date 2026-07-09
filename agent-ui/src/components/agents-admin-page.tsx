@@ -41,7 +41,7 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { AgentSpace, CreateAgentSpaceInput } from '@/lib/api';
-import { cn } from '@/lib/utils';
+import { cn, formatDateTimeWithTimezone } from '@/lib/utils';
 
 interface AgentsAdminPageProps {
   agentSpaces: AgentSpace[];
@@ -50,7 +50,7 @@ interface AgentsAdminPageProps {
   error: string | null;
   onCreateAgent: (input: CreateAgentSpaceInput) => Promise<void>;
   onDeleteAgent: (agentSpace: AgentSpace) => Promise<void>;
-  onOpenAgent: (agentSpace: AgentSpace) => Promise<void>;
+  onOpenAgent: (agentSpace: AgentSpace) => void | Promise<void>;
   onUpdateAgent: (agentSpace: AgentSpace) => Promise<void>;
   onRefresh: () => Promise<void>;
 }
@@ -97,7 +97,7 @@ export function AgentsAdminPage({
   // 当 agentSpaces 列表刷新时，同步更新当前详情页中的 AgentSpace 数据
   useEffect(() => {
     if (!selectedAgent) return;
-    const updated = agentSpaces.find((space) => space.agentSpaceId === selectedAgent.agentSpaceId);
+    const updated = agentSpaces.find((space) => space.name === selectedAgent.name);
     if (updated && updated.updatedAt !== selectedAgent.updatedAt) {
       setSelectedAgent(updated);
     }
@@ -115,7 +115,7 @@ export function AgentsAdminPage({
 
   const handleDelete = async (agentSpace: AgentSpace) => {
     await onDeleteAgent(agentSpace);
-    if (selectedAgent?.agentSpaceId === agentSpace.agentSpaceId) {
+    if (selectedAgent?.name === agentSpace.name) {
       setView('list');
       setSelectedAgent(null);
     }
@@ -189,7 +189,7 @@ function AgentListView({ agentSpaces, booting, busy, onCreate, onOpen, onRefresh
     const keyword = query.trim().toLowerCase();
     const searched = keyword
       ? agentSpaces.filter((agentSpace) =>
-          [agentSpace.name, agentSpace.description, agentSpace.agentSpaceId, agentSpace.llm?.model]
+          [agentSpace.name, agentSpace.description, agentSpace.llm?.model]
             .filter(Boolean)
             .some((value) => String(value).toLowerCase().includes(keyword)),
         )
@@ -345,7 +345,7 @@ function AgentListView({ agentSpaces, booting, busy, onCreate, onOpen, onRefresh
                 <tbody>
                   {filteredAgents.map((agentSpace) => (
                     <tr
-                      key={agentSpace.agentSpaceId}
+                      key={agentSpace.name}
                       className="cursor-pointer border-b border-[#f1f5f9] bg-white transition hover:bg-[#f8fafc]"
                       onClick={() => onSelect(agentSpace)}
                     >
@@ -413,7 +413,7 @@ interface AgentDetailViewProps {
   busy: boolean;
   onBack: () => void;
   onDelete: (agentSpace: AgentSpace) => Promise<void>;
-  onOpen: (agentSpace: AgentSpace) => Promise<void>;
+  onOpen: (agentSpace: AgentSpace) => void;
   onUpdate: (agentSpace: AgentSpace) => Promise<void>;
 }
 
@@ -810,7 +810,9 @@ function CreateAgentWizard({ busy, open, onCreate, onOpenChange }: CreateAgentWi
     }
   }, [open]);
 
-  const canCreate = form.name.trim().length > 0 && form.name.trim().length <= 128 && form.model.trim().length > 0;
+  const nameValid = /^[a-zA-Z0-9]{1,64}$/.test(form.name.trim());
+  const canCreate =
+    nameValid && form.name.trim().length > 0 && form.name.trim().length <= 128 && form.model.trim().length > 0;
   const canContinue = step === 0 ? canCreate : step === 1 ? envRowsAreValid(form.envVars) : true;
 
   const update = (values: Partial<WizardState>) => {
@@ -940,13 +942,13 @@ function StepName({ form, onChange }: StepProps) {
   return (
     <WizardSection eyebrow="Step 1" title="基础信息" description="创建 AgentSpace 并绑定 LLM 配置。">
       <div className="grid gap-4">
-        <LightField label="Agent 名称" hint="1-128 个字符。">
+        <LightField label="Agent 名称" hint="全局唯一，仅字母和数字，1-64 个字符，用于 URL 访问。">
           <input
             className={controlClassName}
-            maxLength={128}
+            maxLength={64}
             value={form.name}
             onChange={(event) => onChange({ name: event.target.value })}
-            placeholder="请输入 Agent 名称"
+            placeholder="例如 finopsprod"
           />
         </LightField>
         <LightField label="描述" hint={`${form.description.length}/512`}>
@@ -1307,32 +1309,11 @@ function describeEnvironment(rows: EnvVarDraft[]) {
 }
 
 function formatDate(value?: string) {
-  if (!value) return '-';
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
+  return formatDateTimeWithTimezone(value);
 }
 
 function formatRelativeTime(value?: string) {
-  if (!value) return '-';
-  const date = new Date(value);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  const diffMin = Math.floor(diffSec / 60);
-  const diffHour = Math.floor(diffMin / 60);
-  const diffDay = Math.floor(diffHour / 24);
-
-  if (diffSec < 60) return '刚刚';
-  if (diffMin < 60) return `${diffMin} 分钟前`;
-  if (diffHour < 24) return `${diffHour} 小时前`;
-  if (diffDay < 30) return `${diffDay} 天前`;
-  if (diffDay < 365) return `${Math.floor(diffDay / 30)} 个月前`;
-  return `${Math.floor(diffDay / 365)} 年前`;
+  return formatDateTimeWithTimezone(value);
 }
 
 function maskWebhook(value?: string) {

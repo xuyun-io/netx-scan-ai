@@ -13,16 +13,19 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
+  Clock,
   ChevronRight,
   ChevronsUpDown,
   Circle,
-  Clock,
   Columns3,
   Copy,
+  Download,
   Expand,
   FileText,
+  Info,
   Menu,
   MoreHorizontal,
+  Play,
   Plus,
   RefreshCw,
   Search,
@@ -40,6 +43,11 @@ import {
   XCircle,
 } from 'lucide-react';
 import { AgentsAdminPage } from '@/components/agents-admin-page';
+import { CreatePageFrame, InstructionsPanel, Panel, RunModeRadioGroup } from '@/components/create-common';
+import { CreateAutomationForm } from '@/components/automations/create';
+import { AutomationDetailView } from '@/components/automations/detail';
+import { AutomationRow } from '@/components/automations/list';
+import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -57,37 +65,43 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
+  cancelTask,
   createAgentSpace,
+  createAutomation,
   createConversation,
   createDocument,
   createTask,
   createTurn,
   deleteAgentSpace,
+  deleteArtifact,
+  deleteAutomation,
   deleteConversation,
+  getArtifact,
+  getAgentSpace,
+  getAutomation,
   getConversation,
   getTask,
   getTurn,
   listArtifacts,
   listAgentSpaces,
+  listAutomations,
   listConversations,
   listDocuments,
   listRecords,
   listTasks,
   respondToTask,
+  triggerAutomation,
   updateAgentSpace,
+  updateAutomation,
+  updateAutomationEnabled,
   type AgentSpace,
+  type Automation,
+  type AutomationSchedule,
   type Artifact,
   type Conversation,
+  type CreateAutomationInput,
   type DocumentFile,
   type RecordEntry,
   type SkillOutput,
@@ -95,7 +109,9 @@ import {
   type Task,
   type Turn,
 } from '@/lib/api';
-import { cn } from '@/lib/utils';
+import { marked } from 'marked';
+import { setHash, parseAgentSpaceNameFromPath, navigateToAgent, navigateToRoot } from '@/lib/routing';
+import { cn, formatPriority, formatShortTime, formatTime, humanizeToken } from '@/lib/utils';
 import {
   emptyTableConfig,
   navigationItems,
@@ -132,6 +148,8 @@ type TimelineItem =
   | { id: string; kind: 'assistant'; scopeKey: string; events: ChatEvent[] };
 
 const MAX_PROMPT_LENGTH = 1000;
+const POLL_TIMEOUT_MS = 180_000;
+const POLL_INTERVAL_MS = 1_000;
 
 const viewCopy: Record<
   ResourceView,
@@ -148,12 +166,12 @@ const viewCopy: Record<
     title: 'Tasks queue',
     description: 'View and manage tasks delegated to the NetX SRE Agent',
     search: 'Find tasks',
-    action: 'Create tasks',
+    action: 'Create task',
   },
   automations: {
     eyebrow: 'Automations',
     title: 'Automations',
-    description: 'Automation is reserved for v2; first version uses manual tasks and chat turns.',
+    description: 'Recurring tasks managed by the NetX SRE Agent',
     search: 'Find automations',
     action: 'Create automation',
   },
@@ -185,12 +203,23 @@ function App() {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [automations, setAutomations] = useState<Automation[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [documents, setDocuments] = useState<DocumentFile[]>([]);
   const [chatEvents, setChatEvents] = useState<ChatEvent[]>([]);
   const [booting, setBooting] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [viewingArtifactId, setViewingArtifactId] = useState<string | null>(null);
+  const [artifactDetail, setArtifactDetail] = useState<{ artifact: Artifact; content: string } | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [viewingTaskId, setViewingTaskId] = useState<string | null>(null);
+  const [taskDetail, setTaskDetail] = useState<{ task: Task; records: RecordEntry[] } | null>(null);
+  const [highlightTaskId, setHighlightTaskId] = useState<string | null>(null);
+  const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
+  const [viewingAutomationId, setViewingAutomationId] = useState<string | null>(null);
+  const [automationDetail, setAutomationDetail] = useState<Automation | null>(null);
 
   const resourceView = activeView === 'chat' ? 'tasks' : activeView;
   const isFullChat = activeView === 'chat';
@@ -201,78 +230,282 @@ function App() {
     setAgentSpaces(page.entities ?? []);
   }, []);
 
-  const refresh = useCallback(async (agentSpaceId: string) => {
-    const [taskPage, artifactPage, documentPage] = await Promise.all([
-      listTasks(agentSpaceId),
-      listArtifacts(agentSpaceId),
-      listDocuments(agentSpaceId),
+  const refresh = useCallback(async (agentSpaceName: string) => {
+    const [taskPage, automationPage, artifactPage, documentPage] = await Promise.all([
+      listTasks(agentSpaceName),
+      listAutomations(agentSpaceName),
+      listArtifacts(agentSpaceName),
+      listDocuments(agentSpaceName),
     ]);
     setTasks(taskPage.entities ?? []);
+    setAutomations(automationPage.entities ?? []);
     setArtifacts(artifactPage.entities ?? []);
     setDocuments(documentPage.entities ?? []);
   }, []);
 
-  const loadConversations = useCallback(async (agentSpaceId: string) => {
-    const page = await listConversations(agentSpaceId, 50);
+  const loadConversations = useCallback(async (agentSpaceName: string) => {
+    const page = await listConversations(agentSpaceName, 50);
     const nextConversations = page.entities ?? [];
     setConversations(nextConversations);
     return nextConversations;
   }, []);
 
-  const loadConversationTimeline = useCallback(async (agentSpaceId: string, nextConversation: Conversation) => {
-    const detail = await getConversation(agentSpaceId, nextConversation.conversationId);
+  const loadConversationTimeline = useCallback(async (agentSpaceName: string, nextConversation: Conversation) => {
+    const detail = await getConversation(agentSpaceName, nextConversation.conversationId);
     setConversation(detail.entity);
-    setChatEvents(await turnsToChatEvents(agentSpaceId, detail.turns ?? []));
+    setChatEvents(await turnsToChatEvents(agentSpaceName, detail.turns ?? []));
+  }, []);
+
+  const applyHashRoute = useCallback(() => {
+    const hash = window.location.hash || '#/chat';
+    if (hash.startsWith('#/task/create')) {
+      const [, query = ''] = hash.split('?');
+      const params = new URLSearchParams(query);
+      const schedule = params.get('mode') === 'schedule';
+      setActiveView(schedule ? 'automations' : 'tasks');
+      setCreateMode(schedule ? 'automation' : 'task');
+      setViewingAutomationId(null);
+      setAutomationDetail(null);
+      setViewingArtifactId(null);
+      return;
+    }
+    if (hash.startsWith('#/automations/') || hash.startsWith('#/automation/')) {
+      const automationId = decodeURIComponent(hash.replace('#/automations/', '').replace('#/automation/', '').split('?')[0]);
+      setActiveView('automations');
+      setCreateMode('none');
+      setViewingAutomationId(automationId || null);
+      setViewingArtifactId(null);
+      return;
+    }
+    if (hash === '#/tasks') {
+      setActiveView('tasks');
+      setCreateMode('none');
+      setViewingAutomationId(null);
+      setAutomationDetail(null);
+      setViewingArtifactId(null);
+      setViewingTaskId(null);
+      setTaskDetail(null);
+      return;
+    }
+    if (hash.startsWith('#/tasks/') || hash.startsWith('#/task/')) {
+      const taskId = decodeURIComponent(hash.replace('#/tasks/', '').replace('#/task/', '').split('?')[0]);
+      setActiveView('tasks');
+      setCreateMode('none');
+      setViewingAutomationId(null);
+      setAutomationDetail(null);
+      setViewingArtifactId(null);
+      setViewingTaskId(taskId || null);
+      return;
+    }
+    if (hash === '#/automations') {
+      setActiveView('automations');
+      setCreateMode('none');
+      setViewingAutomationId(null);
+      setAutomationDetail(null);
+      setViewingArtifactId(null);
+      return;
+    }
+    if (hash === '#/artifacts' || hash === '#/artifact') {
+      setActiveView('artifacts');
+      setCreateMode('none');
+      setViewingAutomationId(null);
+      setAutomationDetail(null);
+      return;
+    }
+    if (hash.startsWith('#/artifact/')) {
+      const artifactId = decodeURIComponent(hash.replace('#/artifact/', '').split('?')[0]);
+      setActiveView('artifacts');
+      setCreateMode('none');
+      setViewingAutomationId(null);
+      setAutomationDetail(null);
+      setViewingArtifactId(artifactId || null);
+      return;
+    }
+    if (hash === '#/context-files') {
+      setActiveView('context-files');
+      setCreateMode('none');
+      setViewingAutomationId(null);
+      setAutomationDetail(null);
+      setViewingArtifactId(null);
+      return;
+    }
+    if (hash === '#/chat') {
+      setActiveView('chat');
+      setCreateMode('none');
+      setViewingAutomationId(null);
+      setAutomationDetail(null);
+      setViewingArtifactId(null);
+    }
   }, []);
 
   useEffect(() => {
+    applyHashRoute();
+    window.addEventListener('hashchange', applyHashRoute);
+    return () => window.removeEventListener('hashchange', applyHashRoute);
+  }, [applyHashRoute]);
+
+  useEffect(() => {
+    if (!agentSpace || !viewingAutomationId) {
+      return;
+    }
     let alive = true;
-    loadAgentSpaces()
-      .catch((err: Error) => setError(err.message))
-      .finally(() => alive && setBooting(false));
+    let timer: number | undefined;
+    setError(null);
+
+    const load = async () => {
+      if (!alive) return;
+      try {
+        const [automationResp, tasksResp] = await Promise.all([
+          getAutomation(agentSpace.name, viewingAutomationId),
+          listTasks(agentSpace.name),
+        ]);
+        if (!alive) return;
+        setAutomationDetail(automationResp.entity);
+        setSelectedAutomationId(automationResp.entity.automationId);
+        setTasks(tasksResp.entities ?? []);
+      } catch (err) {
+        if (alive) setError((err as Error).message);
+      }
+    };
+
+    load();
+    timer = window.setInterval(load, 5000);
+
+    return () => {
+      alive = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [agentSpace, viewingAutomationId]);
+
+  useEffect(() => {
+    if (!agentSpace || !viewingTaskId) {
+      return;
+    }
+    let alive = true;
+    let timer: number | undefined;
+    setError(null);
+
+    const isFinalStatus = (status: string) =>
+      ['COMPLETED', 'SUCCESS', 'FAILED', 'CANCELLED'].includes(status);
+
+    const load = async () => {
+      if (!alive) return;
+      try {
+        const [detail, recordsResp] = await Promise.all([
+          getTask(agentSpace.name, viewingTaskId),
+          listRecords({ agentSpaceName: agentSpace.name, taskId: viewingTaskId, maxResults: 500 }),
+        ]);
+        if (!alive) return;
+        setTaskDetail({ task: detail.entity, records: recordsResp.records ?? [] });
+        setSelectedTaskId(detail.entity.taskId);
+        if (isFinalStatus(detail.entity.status) && timer) {
+          clearInterval(timer);
+          timer = undefined;
+        }
+      } catch (err) {
+        if (alive) setError((err as Error).message);
+      }
+    };
+
+    const startPolling = async () => {
+      await load();
+      if (!alive) return;
+      timer = window.setInterval(load, 2000);
+    };
+
+    startPolling();
+
+    return () => {
+      alive = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [agentSpace, viewingTaskId]);
+
+  useEffect(() => {
+    if (!agentSpace || activeView !== 'automations') {
+      return;
+    }
+    let alive = true;
+    const load = async () => {
+      if (!alive) return;
+      try {
+        const page = await listAutomations(agentSpace.name);
+        if (!alive) return;
+        setAutomations(page.entities ?? []);
+      } catch (err) {
+        if (alive) setError((err as Error).message);
+      }
+    };
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [agentSpace, activeView]);
+
+  useEffect(() => {
+    let alive = true;
+    const bootstrap = async () => {
+      try {
+        await loadAgentSpaces();
+        if (!alive) return;
+        const agentSpaceName = parseAgentSpaceNameFromPath();
+        if (agentSpaceName) {
+          const detail = await getAgentSpace(agentSpaceName);
+          if (!alive) return;
+          setAgentSpace(detail.entity);
+          setAdminView(false);
+          applyHashRoute();
+          const nextConversations = await loadConversations(agentSpaceName);
+          if (!alive) return;
+          if (nextConversations.length === 0 && window.location.hash === '#/chat') {
+            const created = await createConversation(agentSpaceName, '新的会话');
+            if (!alive) return;
+            setConversations([created.entity]);
+            setConversation(created.entity);
+            setChatEvents([]);
+          } else if (nextConversations.length > 0) {
+            await loadConversationTimeline(agentSpaceName, nextConversations[0]);
+          }
+          await refresh(agentSpaceName);
+        } else {
+          setAdminView(true);
+        }
+      } catch (err) {
+        if (alive) setError((err as Error).message);
+      } finally {
+        if (alive) setBooting(false);
+      }
+    };
+    bootstrap();
     return () => {
       alive = false;
     };
-  }, [loadAgentSpaces]);
+  }, [loadAgentSpaces, applyHashRoute, loadConversations, createConversation, loadConversationTimeline, refresh]);
 
   const selectView = (view: WorkspaceView) => {
     setActiveView(view);
     setInlineChatOpen(false);
     setCreateMode('none');
+    setViewingAutomationId(null);
+    setAutomationDetail(null);
+    setViewingTaskId(null);
+    setTaskDetail(null);
+    setHash(`#/${view}`);
   };
 
   const startCreate = (mode: Exclude<CreateMode, 'none'>) => {
     setCreateMode(mode);
     setActiveView(mode === 'task' ? 'tasks' : 'automations');
+    setViewingAutomationId(null);
+    setAutomationDetail(null);
+    setHash(mode === 'task' ? '#/task/create' : '#/task/create?mode=schedule');
   };
 
-  const openAgent = async (nextSpace: AgentSpace) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const nextConversations = await loadConversations(nextSpace.agentSpaceId);
-      const nextConversation =
-        nextConversations[0] ??
-        (await createConversation(nextSpace.agentSpaceId, '新的会话')).entity;
-      setAgentSpace(nextSpace);
-      if (nextConversations.length === 0) {
-        setConversations([nextConversation]);
-        setConversation(nextConversation);
-        setChatEvents([]);
-      } else {
-        await loadConversationTimeline(nextSpace.agentSpaceId, nextConversation);
-      }
-      setPrompt('');
-      setCreateMode('none');
-      setActiveView('chat');
-      setInlineChatOpen(false);
-      setAdminView(false);
-      await refresh(nextSpace.agentSpaceId);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
+  const openAgent = (nextSpace: AgentSpace) => {
+    const agentSpaceName = nextSpace.name;
+    navigateToAgent(agentSpaceName, '#/chat');
   };
 
   const handleCreateAgent = async (input: Parameters<typeof createAgentSpace>[0]) => {
@@ -295,7 +528,6 @@ function App() {
     setError(null);
     try {
       await updateAgentSpace({
-        agentSpaceId: target.agentSpaceId,
         name: target.name,
         description: target.description,
         llm: target.llm,
@@ -303,7 +535,7 @@ function App() {
         integrations: target.integrations,
       });
       await loadAgentSpaces();
-      if (agentSpace?.agentSpaceId === target.agentSpaceId) {
+      if (agentSpace?.name === target.name) {
         setAgentSpace((prev) => (prev ? { ...prev, environment: target.environment } : prev));
       }
     } catch (err) {
@@ -320,18 +552,10 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      await deleteAgentSpace(target.agentSpaceId);
-      if (agentSpace?.agentSpaceId === target.agentSpaceId) {
-        setAgentSpace(null);
-        setConversation(null);
-        setConversations([]);
-        setChatEvents([]);
-        setTasks([]);
-        setArtifacts([]);
-        setDocuments([]);
-        setActiveView('chat');
-        setInlineChatOpen(false);
-        setAdminView(true);
+      await deleteAgentSpace(target.name);
+      if (agentSpace?.name === target.name) {
+        navigateToRoot();
+        return;
       }
       await loadAgentSpaces();
     } catch (err) {
@@ -341,14 +565,8 @@ function App() {
     }
   };
 
-  const handleOpenAdmin = async () => {
-    setAdminView(true);
-    setError(null);
-    try {
-      await loadAgentSpaces();
-    } catch (err) {
-      setError((err as Error).message);
-    }
+  const handleOpenAdmin = () => {
+    navigateToRoot();
   };
 
   const handleNewChat = async () => {
@@ -356,7 +574,7 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      const nextConversation = await createConversation(agentSpace.agentSpaceId, '新的会话');
+      const nextConversation = await createConversation(agentSpace.name, '新的会话');
       setConversation(nextConversation.entity);
       setConversations((prev) => [nextConversation.entity, ...prev.filter((item) => item.conversationId !== nextConversation.entity.conversationId)]);
       setChatEvents([]);
@@ -378,7 +596,7 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      await loadConversationTimeline(agentSpace.agentSpaceId, nextConversation);
+      await loadConversationTimeline(agentSpace.name, nextConversation);
       setActiveView('chat');
       setInlineChatOpen(false);
       setCreateMode('none');
@@ -396,28 +614,131 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      await deleteConversation(agentSpace.agentSpaceId, target.conversationId);
+      await deleteConversation(agentSpace.name, target.conversationId);
       const nextConversations = conversations.filter(
         (item) => item.conversationId !== target.conversationId,
       );
       setConversations(nextConversations);
       if (conversation?.conversationId === target.conversationId) {
         if (nextConversations.length > 0) {
-          await loadConversationTimeline(agentSpace.agentSpaceId, nextConversations[0]);
+          await loadConversationTimeline(agentSpace.name, nextConversations[0]);
         } else {
-          const created = await createConversation(agentSpace.agentSpaceId, '新的会话');
+          const created = await createConversation(agentSpace.name, '新的会话');
           setConversations([created.entity]);
           setConversation(created.entity);
           setChatEvents([]);
         }
       }
-      await loadConversations(agentSpace.agentSpaceId);
+      await loadConversations(agentSpace.name);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
     }
   };
+
+  const openArtifactDetail = async (artifact: Artifact) => {
+    if (!agentSpace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await getArtifact(agentSpace.name, artifact.artifactId);
+      setArtifactDetail({ artifact: detail.entity, content: detail.content });
+      setViewingArtifactId(artifact.artifactId);
+      setSelectedArtifactId(artifact.artifactId);
+      setHash(`#/artifact/${encodeURIComponent(artifact.artifactId)}`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closeArtifactDetail = () => {
+    setArtifactDetail(null);
+    setViewingArtifactId(null);
+  };
+
+  const openTaskDetail = async (task: Task) => {
+    if (!agentSpace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const [detail, recordsResp] = await Promise.all([
+        getTask(agentSpace.name, task.taskId),
+        listRecords({ agentSpaceName: agentSpace.name, taskId: task.taskId, maxResults: 500 }),
+      ]);
+      setTaskDetail({ task: detail.entity, records: recordsResp.records ?? [] });
+      setViewingTaskId(detail.entity.taskId);
+      setSelectedTaskId(detail.entity.taskId);
+      setActiveView('tasks');
+      setCreateMode('none');
+      setHash(`#/task/${encodeURIComponent(detail.entity.taskId)}`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closeTaskDetail = () => {
+    setTaskDetail(null);
+    setViewingTaskId(null);
+  };
+
+  const downloadArtifact = async (artifact: Artifact) => {
+    if (!agentSpace) return;
+    setError(null);
+    try {
+      const detail = await getArtifact(agentSpace.name, artifact.artifactId);
+      const blob = new Blob([detail.content], { type: artifact.type || 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = artifact.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const handleDeleteArtifact = async (artifact: Artifact) => {
+    if (!agentSpace) return;
+    const confirmed = window.confirm(`确定删除产物 "${artifact.name}" 吗？`);
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteArtifact(agentSpace.name, artifact.artifactId);
+      if (selectedArtifactId === artifact.artifactId) {
+        setSelectedArtifactId(null);
+      }
+      if (viewingArtifactId === artifact.artifactId) {
+        closeArtifactDetail();
+      }
+      await refresh(agentSpace.name);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openTaskFromArtifact = (taskId: string) => {
+    closeArtifactDetail();
+    setActiveView('tasks');
+    setInlineChatOpen(false);
+    setCreateMode('none');
+    setViewingAutomationId(null);
+    setAutomationDetail(null);
+    setHash('#/tasks');
+    setHighlightTaskId(taskId);
+  };
+
+  const clearHighlightTask = () => setHighlightTaskId(null);
 
   const handleSend = async () => {
     if (!agentSpace || !conversation || !prompt.trim() || busy) return;
@@ -448,10 +769,10 @@ function App() {
     );
     let scopeKey = '';
     try {
-      const created = await createTurn(agentSpace.agentSpaceId, conversation.conversationId, userPrompt);
+      const created = await createTurn(agentSpace.name, conversation.conversationId, userPrompt);
       scopeKey = turnScope(created.turn.turnId);
       const finalTurn = await pollTurnRecords({
-        agentSpaceId: agentSpace.agentSpaceId,
+        agentSpaceName: agentSpace.name,
         conversationId: conversation.conversationId,
         turnId: created.turn.turnId,
         onUpdate: (turn, records) => {
@@ -474,10 +795,10 @@ function App() {
         },
       });
       if (finalTurn.taskId) {
-        const task = await pollTask(agentSpace.agentSpaceId, finalTurn.taskId);
+        const task = await pollTask(agentSpace.name, finalTurn.taskId);
         const [recordPage, artifactPage] = await Promise.all([
-          listRecords({ agentSpaceId: agentSpace.agentSpaceId, taskId: finalTurn.taskId, maxResults: 100 }),
-          listArtifacts(agentSpace.agentSpaceId),
+          listRecords({ agentSpaceName: agentSpace.name, taskId: finalTurn.taskId, maxResults: 100 }),
+          listArtifacts(agentSpace.name),
         ]);
         const taskEvents = [
           ...recordsToChatEvents(recordPage.records ?? [], { scopeKey }),
@@ -487,8 +808,8 @@ function App() {
         ];
         setChatEvents((prev) => replaceScopedEvents(prev, statusId, scopeKey, taskEvents));
       }
-      await refresh(agentSpace.agentSpaceId);
-      await loadConversations(agentSpace.agentSpaceId);
+      await refresh(agentSpace.name);
+      await loadConversations(agentSpace.name);
     } catch (err) {
       setError((err as Error).message);
       const errorEvents: ChatEvent[] = [
@@ -515,18 +836,140 @@ function App() {
     }
   };
 
-  const handleCreateTask = async (instruction: string, priority: string) => {
+  const handleCreateTask = async (instruction: string) => {
     if (!agentSpace) return;
     setBusy(true);
     setError(null);
     try {
-      const created = await createTask(agentSpace.agentSpaceId, instruction, priority);
+      const created = await createTask(agentSpace.name, instruction);
       setCreateMode('none');
-      await refresh(agentSpace.agentSpaceId);
+      setHash('#/tasks');
+      await refresh(agentSpace.name);
       if (created.entity.status !== 'AWAITING_INPUT') {
-        await pollTask(agentSpace.agentSpaceId, created.entity.taskId);
-        await refresh(agentSpace.agentSpaceId);
+        await pollTask(agentSpace.name, created.entity.taskId);
+        await refresh(agentSpace.name);
       }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreateAutomation = async (input: Omit<CreateAutomationInput, 'agentSpaceName'>) => {
+    if (!agentSpace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await createAutomation({
+        ...input,
+        agentSpaceName: agentSpace.name,
+      });
+      setCreateMode('none');
+      setActiveView('automations');
+      setViewingAutomationId(created.entity.automationId);
+      setAutomationDetail(created.entity);
+      setSelectedAutomationId(created.entity.automationId);
+      setHash(`#/automations/${encodeURIComponent(created.entity.automationId)}`);
+      await refresh(agentSpace.name);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openAutomationDetail = async (automation: Automation) => {
+    if (!agentSpace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await getAutomation(agentSpace.name, automation.automationId);
+      setAutomationDetail(detail.entity);
+      setViewingAutomationId(detail.entity.automationId);
+      setSelectedAutomationId(detail.entity.automationId);
+      setActiveView('automations');
+      setCreateMode('none');
+      setHash(`#/automation/${encodeURIComponent(detail.entity.automationId)}`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closeAutomationDetail = () => {
+    setAutomationDetail(null);
+    setViewingAutomationId(null);
+    setHash('#/automations');
+  };
+
+  const handleToggleAutomationEnabled = async (automation: Automation) => {
+    if (!agentSpace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await updateAutomationEnabled(
+        agentSpace.name,
+        automation.automationId,
+        !automation.enabled,
+      );
+      setAutomationDetail(updated.entity);
+      setAutomations((prev) =>
+        prev.map((item) => (item.automationId === updated.entity.automationId ? updated.entity : item)),
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteAutomation = async (automation: Automation) => {
+    if (!agentSpace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteAutomation(agentSpace.name, automation.automationId);
+      if (viewingAutomationId === automation.automationId) {
+        closeAutomationDetail();
+      }
+      setSelectedAutomationId(null);
+      await refresh(agentSpace.name);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleTriggerAutomation = async (automation: Automation) => {
+    if (!agentSpace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await triggerAutomation(agentSpace.name, automation.automationId);
+      await refresh(agentSpace.name);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUpdateAutomation = async (
+    automation: Automation,
+    input: { name: string; description: string; instruction: string; schedule: AutomationSchedule },
+  ) => {
+    if (!agentSpace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await updateAutomation(agentSpace.name, automation.automationId, input);
+      setAutomationDetail(updated.entity);
+      setAutomations((prev) =>
+        prev.map((item) => (item.automationId === updated.entity.automationId ? updated.entity : item)),
+      );
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -539,14 +982,28 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      const task = await respondToTask(agentSpace.agentSpaceId, taskId, response);
-      await refresh(agentSpace.agentSpaceId);
+      const task = await respondToTask(agentSpace.name, taskId, response);
+      await refresh(agentSpace.name);
       setChatEvents((prev) => updateTaskEvents(prev, task.entity));
       if (response === 'approve') {
-        const completed = await pollTask(agentSpace.agentSpaceId, task.entity.taskId);
+        const completed = await pollTask(agentSpace.name, task.entity.taskId);
         setChatEvents((prev) => updateTaskEvents(prev, completed));
-        await refresh(agentSpace.agentSpaceId);
+        await refresh(agentSpace.name);
       }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCancelTask = async (taskId: string) => {
+    if (!agentSpace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await cancelTask(agentSpace.name, taskId);
+      await refresh(agentSpace.name);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -559,8 +1016,8 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      await createDocument(agentSpace.agentSpaceId, file);
-      await refresh(agentSpace.agentSpaceId);
+      await createDocument(agentSpace.name, file);
+      await refresh(agentSpace.name);
       setUploadOpen(false);
     } catch (err) {
       setError((err as Error).message);
@@ -575,7 +1032,7 @@ function App() {
       return;
     }
     if (view === 'automations') {
-      setCreateMode('automation');
+      startCreate('automation');
       return;
     }
     if (view === 'context-files') {
@@ -587,6 +1044,9 @@ function App() {
     setActiveView('chat');
     setInlineChatOpen(false);
     setCreateMode('none');
+    setViewingAutomationId(null);
+    setAutomationDetail(null);
+    setHash('#/chat');
   };
 
   const expandWorkspace = () => {
@@ -667,20 +1127,52 @@ function App() {
 
           {!isFullChat && (
             <WorkspacePanel
+              automations={automations}
+              automationDetail={automationDetail}
               artifacts={artifacts}
+              artifactDetail={artifactDetail}
               busy={busy}
               createMode={createMode}
               documents={documents}
               error={error}
+              highlightTaskId={highlightTaskId}
+              selectedAutomationId={selectedAutomationId}
+              selectedArtifactId={selectedArtifactId}
               tasks={tasks}
+              viewingAutomationId={viewingAutomationId}
+              viewingArtifactId={viewingArtifactId}
               view={resourceView}
               onApproveTask={handleApproveTask}
-              onCancelCreate={() => setCreateMode('none')}
+              onCancelCreate={() => {
+                setCreateMode('none');
+                setHash(activeView === 'automations' ? '#/automations' : '#/tasks');
+              }}
+              onCancelTask={handleCancelTask}
+              onClearHighlightTask={clearHighlightTask}
+              onCloseAutomationDetail={closeAutomationDetail}
+              onCloseArtifactDetail={closeArtifactDetail}
               onCreate={startCreate}
+              onCreateAutomation={handleCreateAutomation}
               onCreateTask={handleCreateTask}
+              onDeleteArtifact={handleDeleteArtifact}
+              onDownloadArtifact={downloadArtifact}
               onExpandWorkspace={expandWorkspace}
+              onOpenAutomationDetail={openAutomationDetail}
+              onOpenArtifactDetail={openArtifactDetail}
+              onOpenTaskDetail={openTaskDetail}
+              onOpenTaskFromArtifact={openTaskFromArtifact}
               onPrimaryAction={handlePrimaryAction}
-              onRefresh={() => agentSpace && refresh(agentSpace.agentSpaceId)}
+              onRefresh={() => agentSpace && refresh(agentSpace.name)}
+              onToggleAutomationEnabled={handleToggleAutomationEnabled}
+              onDeleteAutomation={handleDeleteAutomation}
+              onTriggerAutomation={handleTriggerAutomation}
+              onUpdateAutomation={handleUpdateAutomation}
+              setSelectedAutomationId={setSelectedAutomationId}
+              selectedTaskId={selectedTaskId}
+              setSelectedTaskId={setSelectedTaskId}
+              taskDetail={taskDetail}
+              viewingTaskId={viewingTaskId}
+              onCloseTaskDetail={closeTaskDetail}
             />
           )}
         </main>
@@ -713,14 +1205,14 @@ function TopBar({ agentSpaceName, onOpenAdmin }: { agentSpaceName: string; onOpe
         </button>
         <div className="flex items-center gap-3">
           <button
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-bold text-[#c3c9d3] transition hover:bg-[#202936] hover:text-white"
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-[#c3c9d3] transition hover:bg-[#202936] hover:text-white"
             onClick={onOpenAdmin}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Agents
           </button>
-          <span className="text-sm font-bold text-[#f2f4f8]">{agentSpaceName}</span>
-          <span className="rounded bg-[#6b7079] px-2 py-0.5 text-[11px] font-bold text-white">
+          <span className="text-sm font-semibold text-[#f2f4f8]">{agentSpaceName}</span>
+          <span className="rounded bg-[#6b7079] px-2 py-0.5 text-[11px] font-medium text-white">
             v1 Preview
           </span>
         </div>
@@ -729,7 +1221,7 @@ function TopBar({ agentSpaceName, onOpenAdmin }: { agentSpaceName: string; onOpe
       <div className="flex items-center gap-4 text-[#8f82ff]">
         <Columns3 className="h-4 w-4" />
         <Circle className="h-4 w-4 fill-current opacity-85" />
-        <button className="text-xs font-bold hover:text-white">Sign out</button>
+        <button className="text-xs font-medium hover:text-white">Sign out</button>
       </div>
     </header>
   );
@@ -770,7 +1262,7 @@ function Sidebar({
               <button
                 key={item.id}
                 className={cn(
-                  'flex w-full items-center gap-2 rounded-md px-0.5 py-1 text-left text-sm font-semibold transition-colors',
+                  'flex w-full items-center gap-2 rounded-md px-0.5 py-1 text-left text-sm font-medium transition-colors',
                   active ? 'text-[#8f82ff]' : 'text-[#c3c9d3] hover:text-white',
                 )}
                 onClick={() => onSelectView(item.id)}
@@ -784,10 +1276,10 @@ function Sidebar({
       </div>
 
       <div className="px-5 py-4">
-        <div className="mb-4 text-sm font-bold text-[#d9dee8]">Recent</div>
+        <div className="mb-4 text-sm font-semibold text-[#d9dee8]">Recent</div>
         <div className="space-y-2">
           {conversations.length === 0 && (
-            <div className="text-xs font-semibold text-[#788291]">No conversations yet</div>
+            <div className="text-xs font-normal text-[#788291]">No conversations yet</div>
           )}
           {conversations.map((item) => {
             const active = activeConversationId === item.conversationId;
@@ -801,7 +1293,7 @@ function Sidebar({
               >
                 <button
                   className={cn(
-                    'min-w-0 flex-1 truncate text-left text-xs font-semibold',
+                    'min-w-0 flex-1 truncate text-left text-xs font-normal',
                     active ? 'text-[#8f82ff]' : 'text-[#b8bfcc] hover:text-white',
                   )}
                   onClick={() => onOpenConversation(item)}
@@ -821,7 +1313,7 @@ function Sidebar({
         </div>
       </div>
 
-      <div className="mt-auto flex items-center gap-2 border-t border-[#202936] px-5 py-4 text-xs font-semibold text-[#aab2bf]">
+      <div className="mt-auto flex items-center gap-2 border-t border-[#202936] px-5 py-4 text-xs font-normal text-[#aab2bf]">
         <Bot className="h-4 w-4" />
         FileStore
       </div>
@@ -869,8 +1361,8 @@ function AgentComposer({
       <div className="flex h-12 items-center justify-between border-b border-[#222b36] px-5">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
-            <h1 className="truncate text-sm font-extrabold text-[#f2f4f8]">{title}</h1>
-            <button className="shrink-0 text-xs font-bold text-[#8f82ff] hover:text-[#aaa2ff]">
+            <h1 className="truncate text-sm font-semibold text-[#f2f4f8]">{title}</h1>
+            <button className="shrink-0 text-xs font-medium text-[#8f82ff] hover:text-[#aaa2ff]">
               Show ID
             </button>
           </div>
@@ -921,12 +1413,12 @@ function ChatEmptyState({
         compact ? 'justify-start' : 'mx-auto max-w-[980px] justify-center pb-24',
       )}
     >
-      <div className={cn('text-xs font-bold text-[#8f98a6]', compact ? '' : 'text-center')}>
+      <div className={cn('text-xs font-medium text-[#8f98a6]', compact ? '' : 'text-center')}>
         Get started with a common task
       </div>
       <h2
         className={cn(
-          'agent-gradient-title mt-3 font-extrabold',
+          'agent-gradient-title mt-3 font-bold',
           compact ? 'text-xl leading-7' : 'text-center text-3xl',
         )}
       >
@@ -936,7 +1428,7 @@ function ChatEmptyState({
         {promptTemplates.slice(0, compact ? 4 : 8).map((template) => (
           <button
             key={template.id}
-            className="rounded-md border border-[#3b3480] bg-[#121922] px-3 py-2 text-left text-sm font-bold leading-5 text-[#9a91ff] transition hover:border-[#958bff] hover:bg-[#8378ff]/10 hover:text-[#b9b3ff]"
+            className="rounded-md border border-[#3b3480] bg-[#121922] px-3 py-2 text-left text-sm font-medium leading-5 text-[#9a91ff] transition hover:border-[#958bff] hover:bg-[#8378ff]/10 hover:text-[#b9b3ff]"
             onClick={() => onTemplateClick(template.text)}
           >
             {template.text}
@@ -994,8 +1486,8 @@ function TimelineItemRow({
       <div className="min-w-0">
         {event.type === 'user' && (
           <div className="pt-0.5 text-sm leading-6 text-[#aeb7c5]">
-            <div className="whitespace-pre-wrap text-[15px] font-semibold">{event.content}</div>
-            <div className="mt-1 text-xs font-semibold text-[#9ca6b5]">{formatTime(event.createdAt)}</div>
+            <div className="whitespace-pre-wrap text-[15px] font-normal">{event.content}</div>
+            <div className="mt-1 text-xs font-normal text-[#9ca6b5]">{formatTime(event.createdAt)}</div>
           </div>
         )}
         {!isUser && event.type === 'status' && <StatusEvent event={event} />}
@@ -1046,7 +1538,7 @@ function AssistantResponseEvent({
     <div className="box-border w-full max-w-[1360px] min-w-0 overflow-hidden rounded-md border border-[#1c2530] bg-[#0a0f15] px-4 py-4 text-[#b8c1cf] shadow-[0_18px_55px_rgba(0,0,0,0.16)]">
       {stepCount > 0 && !running && !showSteps && (
         <button
-          className="mb-4 text-sm font-extrabold text-[#8f82ff] hover:text-[#b8b0ff]"
+          className="mb-4 text-sm font-semibold text-[#8f82ff] hover:text-[#b8b0ff]"
           onClick={toggleSteps}
         >
           Show thinking process ({stepCount} {stepCount === 1 ? 'step' : 'steps'})
@@ -1069,7 +1561,7 @@ function AssistantResponseEvent({
 
       {stepCount > 0 && !running && showSteps && (
         <button
-          className="mt-4 text-sm font-extrabold text-[#8f82ff] hover:text-[#b8b0ff]"
+          className="mt-4 text-sm font-semibold text-[#8f82ff] hover:text-[#b8b0ff]"
           onClick={toggleSteps}
         >
           Hide thinking process
@@ -1120,7 +1612,7 @@ function StatusStep({ event }: { event: Extract<ChatEvent, { type: 'status' }> }
       <Clock className="h-4 w-4 animate-spin text-[#aeb7c5]" />
     );
   return (
-    <div className="flex min-w-0 items-start gap-2 text-sm font-semibold leading-6 text-[#aeb7c5]">
+    <div className="flex min-w-0 items-start gap-2 text-sm font-normal leading-6 text-[#aeb7c5]">
       <span className="mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center opacity-90">{icon}</span>
       <span className="min-w-0 whitespace-pre-wrap break-words">{event.content}</span>
     </div>
@@ -1130,14 +1622,14 @@ function StatusStep({ event }: { event: Extract<ChatEvent, { type: 'status' }> }
 function RunningProcess({ label }: { label: string }) {
   return (
     <div>
-      <div className="flex items-center gap-2 text-sm font-bold text-[#aeb7c5]">
+      <div className="flex items-center gap-2 text-sm font-medium text-[#aeb7c5]">
         <Clock className="h-4 w-4 animate-spin text-[#c4cad5]" />
         {label}
       </div>
       <div className="mt-3 h-[3px] w-full overflow-hidden rounded-full bg-[#242d3a]">
         <div className="h-full w-1/3 animate-progress rounded-full bg-gradient-to-r from-[#8f82ff] via-[#18b8ff] to-[#9d4dff]" />
       </div>
-      <button className="mt-4 text-sm font-extrabold text-[#8f82ff] hover:text-[#aaa2ff]">Cancel</button>
+      <button className="mt-4 text-sm font-semibold text-[#8f82ff] hover:text-[#aaa2ff]">Cancel</button>
     </div>
   );
 }
@@ -1168,7 +1660,7 @@ function StatusEvent({ event }: { event: Extract<ChatEvent, { type: 'status' }> 
     );
   return (
     <div>
-      <div className="flex items-center gap-2 text-sm font-bold text-[#cbd3df]">
+      <div className="flex items-center gap-2 text-sm font-medium text-[#cbd3df]">
         {icon}
         {event.content}
       </div>
@@ -1177,7 +1669,7 @@ function StatusEvent({ event }: { event: Extract<ChatEvent, { type: 'status' }> 
           <div className="mt-3 h-[3px] w-[min(420px,70%)] overflow-hidden rounded-full bg-[#242d3a]">
             <div className="h-full w-1/3 animate-progress rounded-full bg-gradient-to-r from-[#8f82ff] via-[#18b8ff] to-[#9d4dff]" />
           </div>
-          <button className="mt-3 text-sm font-bold text-[#8f82ff] hover:text-[#aaa2ff]">Cancel</button>
+          <button className="mt-3 text-sm font-semibold text-[#8f82ff] hover:text-[#aaa2ff]">Cancel</button>
         </>
       )}
     </div>
@@ -1206,7 +1698,7 @@ function ToolEvent({ event, embedded = false }: { event: Extract<ChatEvent, { ty
           : '';
   return (
     <div className={cn('min-w-0 max-w-full overflow-hidden', embedded ? '' : 'rounded-md border border-[#202936] bg-[#0d131b] px-4 py-3')}>
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm font-bold leading-6">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium leading-6">
         {complete ? (
           <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-[#26d044] text-[#26d044]">
             <Check className="h-3 w-3 stroke-[3]" />
@@ -1262,7 +1754,7 @@ function ToolEvent({ event, embedded = false }: { event: Extract<ChatEvent, { ty
 function PayloadBlock({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 max-w-full overflow-hidden">
-      <div className="mb-1 text-xs font-extrabold uppercase tracking-wide text-[#aab2bf]">{label}</div>
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[#aab2bf]">{label}</div>
       <pre className="max-h-[260px] max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-[#202936] bg-[#101722] px-3 py-2 font-mono text-xs leading-5 text-[#d8dee8] [overflow-wrap:anywhere]">
         {value}
       </pre>
@@ -1275,8 +1767,8 @@ function TaskEvent({ event }: { event: Extract<ChatEvent, { type: 'task' }> }) {
     <div className="rounded-md border border-[#2e3b4d] bg-[#101820] px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-xs font-bold uppercase tracking-wide text-[#8f98a6]">Task created</div>
-          <div className="mt-1 text-sm font-extrabold text-[#eef2f8]">{event.title}</div>
+          <div className="text-xs font-medium uppercase tracking-wide text-[#8f98a6]">Task created</div>
+          <div className="mt-1 text-sm font-semibold text-[#eef2f8]">{event.title}</div>
         </div>
         <StatusBadge status={event.status} />
       </div>
@@ -1296,15 +1788,15 @@ function ApprovalEvent({
   const pending = event.status === 'AWAITING_INPUT';
   return (
     <div className="rounded-md border border-amber-400/30 bg-amber-950/20 px-4 py-3">
-      <div className="flex items-center gap-2 text-sm font-extrabold text-amber-200">
+      <div className="flex items-center gap-2 text-sm font-semibold text-amber-200">
         <ShieldCheck className="h-4 w-4" />
         {pending ? 'Waiting for approval' : `Approval ${event.status.toLowerCase()}`}
       </div>
       <div className="mt-3 grid gap-2 text-sm text-[#e7d7b7]">
-        <div><span className="font-bold">操作：</span>{event.title}</div>
-        <div><span className="font-bold">风险：</span>{event.risk}</div>
-        <div><span className="font-bold">目标：</span>{event.target}</div>
-        <div><span className="font-bold">摘要：</span>{event.command}</div>
+        <div><span className="font-semibold">操作：</span>{event.title}</div>
+        <div><span className="font-semibold">风险：</span>{event.risk}</div>
+        <div><span className="font-semibold">目标：</span>{event.target}</div>
+        <div><span className="font-semibold">摘要：</span>{event.command}</div>
       </div>
       <div className="mt-4 flex gap-2">
         <Button className="h-8 px-4 text-xs" disabled={!pending} onClick={() => onApproveTask(event.taskId, 'approve')}>
@@ -1324,11 +1816,11 @@ function ArtifactEvent({ event }: { event: Extract<ChatEvent, { type: 'artifact'
       <div className="flex min-w-0 items-center gap-3">
         <FileText className="h-4 w-4 shrink-0 text-[#8f82ff]" />
         <div className="min-w-0">
-          <div className="truncate text-sm font-bold text-[#eef2f8]">{event.name}</div>
+          <div className="truncate text-sm font-semibold text-[#eef2f8]">{event.name}</div>
           <div className="font-mono text-xs text-[#aab2bf]">{event.artifactType} · {event.artifactId}</div>
         </div>
       </div>
-      <button className="text-xs font-bold text-[#8f82ff] hover:text-[#aaa2ff]">View</button>
+      <button className="text-xs font-medium text-[#8f82ff] hover:text-[#aaa2ff]">View</button>
     </div>
   );
 }
@@ -1336,9 +1828,9 @@ function ArtifactEvent({ event }: { event: Extract<ChatEvent, { type: 'artifact'
 function AnswerEvent({ event, embedded = false }: { event: Extract<ChatEvent, { type: 'answer' }>; embedded?: boolean }) {
   const body = (
     <>
-      <div className="prose-netx min-w-0 max-w-full whitespace-pre-wrap break-words text-sm font-semibold leading-6 text-[#b8c1cf] [overflow-wrap:anywhere]">{event.content}</div>
+      <div className="prose-netx min-w-0 max-w-full whitespace-pre-wrap break-words text-sm font-normal leading-6 text-[#b8c1cf] [overflow-wrap:anywhere]">{event.content}</div>
       {event.taskId && (
-        <div className="mt-3 inline-flex rounded border border-[#8378ff]/40 px-2 py-1 text-xs font-bold text-[#9a91ff]">
+        <div className="mt-3 inline-flex rounded border border-[#8378ff]/40 px-2 py-1 text-xs font-medium text-[#9a91ff]">
           Task: {event.taskId}
         </div>
       )}
@@ -1399,12 +1891,12 @@ function ChatInput({
             }}
             placeholder="例如：现在链上块高多少？或生成一份 validator 健康巡检报告。"
             className={cn(
-              'block w-full resize-none border-0 bg-transparent px-3 py-3 text-sm font-semibold leading-6 text-[#dce1eb] outline-none placeholder:text-[#a2a9b4] focus:outline-none',
+              'block w-full resize-none border-0 bg-transparent px-3 py-3 text-sm font-normal leading-6 text-[#dce1eb] outline-none placeholder:text-[#a2a9b4] focus:outline-none',
               compact ? 'h-[68px]' : 'h-[84px]',
             )}
           />
           <div className="flex h-10 items-center justify-end gap-3 border-t border-[#232d39] px-3">
-            <div className="text-xs font-bold text-[#aab2bf]">
+            <div className="text-xs font-medium text-[#aab2bf]">
               字数 {prompt.length}/{MAX_PROMPT_LENGTH}
             </div>
             <button
@@ -1423,37 +1915,95 @@ function ChatInput({
 }
 
 interface WorkspacePanelProps {
+  automations: Automation[];
+  automationDetail: Automation | null;
   artifacts: Artifact[];
+  artifactDetail: { artifact: Artifact; content: string } | null;
   busy: boolean;
   createMode: CreateMode;
   documents: DocumentFile[];
   error: string | null;
+  highlightTaskId: string | null;
+  selectedAutomationId: string | null;
+  selectedArtifactId: string | null;
+  selectedTaskId: string | null;
+  taskDetail: { task: Task; records: RecordEntry[] } | null;
   tasks: Task[];
+  viewingAutomationId: string | null;
+  viewingArtifactId: string | null;
+  viewingTaskId: string | null;
   view: ResourceView;
   onApproveTask: (taskId: string, response: 'approve' | 'reject') => void;
   onCancelCreate: () => void;
+  onCancelTask: (taskId: string) => void;
+  onClearHighlightTask: () => void;
+  onCloseAutomationDetail: () => void;
+  onCloseArtifactDetail: () => void;
   onCreate: (mode: Exclude<CreateMode, 'none'>) => void;
-  onCreateTask: (instruction: string, priority: string) => void;
+  onCreateAutomation: (input: Omit<CreateAutomationInput, 'agentSpaceName'>) => void;
+  onCreateTask: (instruction: string) => void;
+  onDeleteArtifact: (artifact: Artifact) => void;
+  onDownloadArtifact: (artifact: Artifact) => void;
   onExpandWorkspace: () => void;
+  onOpenAutomationDetail: (automation: Automation) => void;
+  onOpenArtifactDetail: (artifact: Artifact) => void;
+  onOpenTaskDetail: (task: Task) => void;
+  onOpenTaskFromArtifact: (taskId: string) => void;
   onPrimaryAction: (view: ResourceView) => void;
   onRefresh: () => void;
+  onToggleAutomationEnabled: (automation: Automation) => void;
+  onDeleteAutomation: (automation: Automation) => void;
+  onTriggerAutomation: (automation: Automation) => void;
+  onUpdateAutomation: (automation: Automation, input: { name: string; description: string; instruction: string; schedule: AutomationSchedule }) => Promise<void>;
+  onCloseTaskDetail: () => void;
+  setSelectedAutomationId: (automationId: string | null) => void;
+  setSelectedTaskId: (taskId: string | null) => void;
 }
 
 function WorkspacePanel({
+  automations,
+  automationDetail,
   artifacts,
+  artifactDetail,
   busy,
   createMode,
   documents,
   error,
+  highlightTaskId,
+  selectedAutomationId,
+  selectedArtifactId,
+  selectedTaskId,
+  taskDetail,
   tasks,
+  viewingAutomationId,
+  viewingArtifactId,
+  viewingTaskId,
   view,
   onApproveTask,
   onCancelCreate,
+  onCancelTask,
+  onClearHighlightTask,
+  onCloseAutomationDetail,
+  onCloseArtifactDetail,
   onCreate,
+  onCreateAutomation,
   onCreateTask,
+  onDeleteArtifact,
+  onDownloadArtifact,
   onExpandWorkspace,
+  onOpenAutomationDetail,
+  onOpenArtifactDetail,
+  onOpenTaskDetail,
+  onOpenTaskFromArtifact,
   onPrimaryAction,
   onRefresh,
+  onToggleAutomationEnabled,
+  onDeleteAutomation,
+  onTriggerAutomation,
+  onUpdateAutomation,
+  onCloseTaskDetail,
+  setSelectedAutomationId,
+  setSelectedTaskId,
 }: WorkspacePanelProps) {
   return (
     <section className="agent-scrollbar h-full min-w-0 overflow-auto px-5 py-4">
@@ -1463,20 +2013,56 @@ function WorkspacePanel({
         </div>
       )}
       {createMode === 'task' && (
-        <CreateTaskForm busy={busy} onCancel={onCancelCreate} onSubmit={onCreateTask} />
+        <CreateTaskForm busy={busy} onCancel={onCancelCreate} onSchedule={() => onCreate('automation')} onSubmit={onCreateTask} />
       )}
-      {createMode === 'automation' && <AutomationReserved onCancel={onCancelCreate} />}
+      {createMode === 'automation' && (
+        <CreateAutomationForm
+          busy={busy}
+          onCancel={onCancelCreate}
+          onRunOnce={() => onCreate('task')}
+          onSubmit={onCreateAutomation}
+        />
+      )}
       {createMode === 'none' && (
         <ResourceList
+          automations={automations}
+          automationDetail={automationDetail}
           artifacts={artifacts}
+          artifactDetail={artifactDetail}
+          busy={busy}
           documents={documents}
+          highlightTaskId={highlightTaskId}
+          selectedAutomationId={selectedAutomationId}
+          selectedArtifactId={selectedArtifactId}
+          selectedTaskId={selectedTaskId}
+          taskDetail={taskDetail}
           tasks={tasks}
+          viewingAutomationId={viewingAutomationId}
+          viewingArtifactId={viewingArtifactId}
+          viewingTaskId={viewingTaskId}
           view={view}
           onApproveTask={onApproveTask}
+          onCancelTask={onCancelTask}
+          onClearHighlightTask={onClearHighlightTask}
+          onCloseAutomationDetail={onCloseAutomationDetail}
+          onCloseArtifactDetail={onCloseArtifactDetail}
           onCreate={onCreate}
+          onDeleteArtifact={onDeleteArtifact}
+          onDownloadArtifact={onDownloadArtifact}
           onExpandWorkspace={onExpandWorkspace}
+          onOpenAutomationDetail={onOpenAutomationDetail}
+          onOpenArtifactDetail={onOpenArtifactDetail}
+          onOpenTaskDetail={onOpenTaskDetail}
+          onOpenTaskFromArtifact={onOpenTaskFromArtifact}
           onPrimaryAction={() => onPrimaryAction(view)}
           onRefresh={onRefresh}
+          onToggleAutomationEnabled={onToggleAutomationEnabled}
+          onDeleteAutomation={onDeleteAutomation}
+          onTriggerAutomation={onTriggerAutomation}
+          onUpdateAutomation={onUpdateAutomation}
+          onCloseTaskDetail={onCloseTaskDetail}
+          setSelectedAutomationId={setSelectedAutomationId}
+          setSelectedTaskId={setSelectedTaskId}
         />
       )}
     </section>
@@ -1484,38 +2070,146 @@ function WorkspacePanel({
 }
 
 interface ResourceListProps {
+  automations: Automation[];
+  automationDetail: Automation | null;
   artifacts: Artifact[];
+  artifactDetail: { artifact: Artifact; content: string } | null;
+  busy: boolean;
   documents: DocumentFile[];
+  highlightTaskId: string | null;
+  selectedAutomationId: string | null;
+  selectedArtifactId: string | null;
+  selectedTaskId: string | null;
+  taskDetail: { task: Task; records: RecordEntry[] } | null;
   tasks: Task[];
+  viewingAutomationId: string | null;
+  viewingArtifactId: string | null;
+  viewingTaskId: string | null;
   view: ResourceView;
   onApproveTask: (taskId: string, response: 'approve' | 'reject') => void;
+  onCancelTask: (taskId: string) => void;
+  onClearHighlightTask: () => void;
+  onCloseAutomationDetail: () => void;
+  onCloseArtifactDetail: () => void;
   onCreate: (mode: Exclude<CreateMode, 'none'>) => void;
+  onDeleteArtifact: (artifact: Artifact) => void;
+  onDownloadArtifact: (artifact: Artifact) => void;
   onExpandWorkspace: () => void;
+  onOpenAutomationDetail: (automation: Automation) => void;
+  onOpenArtifactDetail: (artifact: Artifact) => void;
+  onOpenTaskDetail: (task: Task) => void;
+  onOpenTaskFromArtifact: (taskId: string) => void;
   onPrimaryAction: () => void;
   onRefresh: () => void;
+  onToggleAutomationEnabled: (automation: Automation) => void;
+  onDeleteAutomation: (automation: Automation) => void;
+  onTriggerAutomation: (automation: Automation) => void;
+  onUpdateAutomation: (automation: Automation, input: { name: string; description: string; instruction: string; schedule: AutomationSchedule }) => Promise<void>;
+  onCloseTaskDetail: () => void;
+  setSelectedAutomationId: (automationId: string | null) => void;
+  setSelectedTaskId: (taskId: string | null) => void;
 }
 
 function ResourceList({
+  automations,
+  automationDetail,
   artifacts,
+  artifactDetail,
   documents,
+  highlightTaskId,
+  selectedAutomationId,
+  selectedArtifactId,
+  selectedTaskId,
+  taskDetail,
   tasks,
+  viewingAutomationId,
+  viewingArtifactId,
+  viewingTaskId,
   view,
   onApproveTask,
+  onCancelTask,
+  onClearHighlightTask,
+  onCloseAutomationDetail,
+  onCloseArtifactDetail,
   onCreate,
+  onDeleteArtifact,
+  onDownloadArtifact,
   onExpandWorkspace,
+  onOpenAutomationDetail,
+  onOpenArtifactDetail,
+  onOpenTaskDetail,
+  onOpenTaskFromArtifact,
   onPrimaryAction,
   onRefresh,
+  onToggleAutomationEnabled,
+  onDeleteAutomation,
+  onTriggerAutomation,
+  onUpdateAutomation,
+  onCloseTaskDetail,
+  setSelectedAutomationId,
+  setSelectedTaskId,
+  busy,
 }: ResourceListProps) {
   const copy = viewCopy[view];
   const isTasks = view === 'tasks';
   const count =
     view === 'tasks'
       ? tasks.length
+      : view === 'automations'
+        ? automations.length
       : view === 'artifacts'
         ? artifacts.length
         : view === 'context-files'
           ? documents.length
           : 0;
+
+  if (view === 'artifacts' && viewingArtifactId && artifactDetail) {
+    return (
+      <ArtifactDetailView
+        artifact={artifactDetail.artifact}
+        content={artifactDetail.content}
+        onBack={onCloseArtifactDetail}
+        onDelete={() => onDeleteArtifact(artifactDetail.artifact)}
+        onDownload={() => onDownloadArtifact(artifactDetail.artifact)}
+        onOpenTask={onOpenTaskFromArtifact}
+      />
+    );
+  }
+
+  if (view === 'automations' && viewingAutomationId && automationDetail) {
+    return (
+      <AutomationDetailView
+        automation={automationDetail}
+        busy={busy}
+        tasks={tasks.filter((task) => task.automationId === automationDetail.automationId)}
+        onBack={onCloseAutomationDetail}
+        onDelete={() => onDeleteAutomation(automationDetail)}
+        onOpenTask={onOpenTaskDetail}
+        onRunOnce={() => onTriggerAutomation(automationDetail)}
+        onToggleEnabled={() => onToggleAutomationEnabled(automationDetail)}
+        onUpdate={(input) => onUpdateAutomation(automationDetail, input)}
+      />
+    );
+  }
+
+  if (view === 'tasks' && viewingTaskId && taskDetail) {
+    return (
+      <TaskDetailView
+        artifacts={artifacts.filter((a) => a.taskId === taskDetail.task.taskId)}
+        records={taskDetail.records}
+        task={taskDetail.task}
+        onBack={onCloseTaskDetail}
+        onOpenArtifact={onOpenArtifactDetail}
+      />
+    );
+  }
+
+  const taskTabs = [
+    { value: 'all', label: 'All tasks', rows: tasks },
+    { value: 'approval', label: 'Awaiting approval', rows: tasks.filter((task) => task.status === 'AWAITING_INPUT') },
+    { value: 'progress', label: 'In progress', rows: tasks.filter((task) => task.status === 'IN_PROGRESS' || task.status === 'PENDING') },
+    { value: 'completed', label: 'Completed', rows: tasks.filter((task) => task.status === 'COMPLETED' || task.status === 'SUCCESS') },
+  ];
 
   return (
     <div className="min-w-[720px]">
@@ -1523,31 +2217,51 @@ function ResourceList({
       {isTasks && <RequestUpdatesCard tasks={tasks} />}
       {isTasks ? (
         <Tabs defaultValue="all" className="mt-5">
-          <TabsList>
-            <TabsTrigger value="all">All tasks</TabsTrigger>
-            <TabsTrigger value="approval">Awaiting approval</TabsTrigger>
-            <TabsTrigger value="progress">In progress</TabsTrigger>
-            <TabsTrigger value="completed">Completed</TabsTrigger>
+          <TabsList className="gap-3">
+            {taskTabs.map((tab) => (
+              <TabsTrigger key={tab.value} value={tab.value} className="px-4">
+                <span>{tab.label}</span>
+                {tab.rows.length > 0 && (
+                  <span className="ml-2 rounded bg-[#747984] px-1.5 py-0.5 text-[11px] font-semibold leading-none text-white">
+                    {tab.rows.length}
+                  </span>
+                )}
+              </TabsTrigger>
+            ))}
           </TabsList>
-          {[
-            ['all', tasks],
-            ['approval', tasks.filter((task) => task.status === 'AWAITING_INPUT')],
-            ['progress', tasks.filter((task) => task.status === 'IN_PROGRESS' || task.status === 'PENDING')],
-            ['completed', tasks.filter((task) => task.status === 'COMPLETED')],
-          ].map(([tab, tabTasks]) => (
-            <TabsContent key={String(tab)} value={String(tab)}>
+          {taskTabs.map((tab) => (
+            <TabsContent key={tab.value} value={tab.value}>
               <ResourceTable
                 actionLabel={copy.action}
+                automations={automations}
                 artifacts={artifacts}
+                busy={busy}
                 description={copy.description}
                 documents={documents}
+                highlightTaskId={highlightTaskId}
                 searchPlaceholder={copy.search}
-                tasks={tabTasks as Task[]}
-                title={`${copy.title} (${(tabTasks as Task[]).length})`}
+                selectedAutomationId={selectedAutomationId}
+                selectedArtifactId={selectedArtifactId}
+                selectedTaskId={selectedTaskId}
+                tasks={tab.rows}
+                title={`${copy.title} (${tab.rows.length})`}
                 view={view}
                 onApproveTask={onApproveTask}
+                onCancelTask={onCancelTask}
+                onClearHighlightTask={onClearHighlightTask}
+                onDeleteArtifact={onDeleteArtifact}
+                onDownloadArtifact={onDownloadArtifact}
+                onOpenAutomationDetail={onOpenAutomationDetail}
+                onOpenArtifactDetail={onOpenArtifactDetail}
+                onOpenTaskDetail={onOpenTaskDetail}
+                onDeleteAutomation={onDeleteAutomation}
+                onTriggerAutomation={onTriggerAutomation}
+                onUpdateAutomation={onUpdateAutomation}
+                onToggleAutomationEnabled={onToggleAutomationEnabled}
                 onPrimaryAction={() => onCreate('task')}
                 onRefresh={onRefresh}
+                setSelectedAutomationId={setSelectedAutomationId}
+                setSelectedTaskId={setSelectedTaskId}
               />
             </TabsContent>
           ))}
@@ -1556,16 +2270,35 @@ function ResourceList({
         <div className="mt-4">
           <ResourceTable
             actionLabel={copy.action}
+            automations={automations}
             artifacts={artifacts}
             description={copy.description}
             documents={documents}
+            highlightTaskId={highlightTaskId}
             searchPlaceholder={copy.search}
+            selectedAutomationId={selectedAutomationId}
+            selectedArtifactId={selectedArtifactId}
+            selectedTaskId={selectedTaskId}
             tasks={tasks}
             title={`${copy.title} (${count})`}
             view={view}
             onApproveTask={onApproveTask}
+            onCancelTask={onCancelTask}
+            onClearHighlightTask={onClearHighlightTask}
+            onDeleteArtifact={onDeleteArtifact}
+            onDownloadArtifact={onDownloadArtifact}
+            onOpenAutomationDetail={onOpenAutomationDetail}
+            onOpenArtifactDetail={onOpenArtifactDetail}
+            onOpenTaskDetail={onOpenTaskDetail}
+            onDeleteAutomation={onDeleteAutomation}
+            onTriggerAutomation={onTriggerAutomation}
+            onUpdateAutomation={onUpdateAutomation}
+            onToggleAutomationEnabled={onToggleAutomationEnabled}
             onPrimaryAction={onPrimaryAction}
             onRefresh={onRefresh}
+            setSelectedAutomationId={setSelectedAutomationId}
+            setSelectedTaskId={setSelectedTaskId}
+            busy={busy}
           />
         </div>
       )}
@@ -1573,10 +2306,60 @@ function ResourceList({
   );
 }
 
+function CreateTaskForm({
+  busy,
+  onCancel,
+  onSchedule,
+  onSubmit,
+}: {
+  busy: boolean;
+  onCancel: () => void;
+  onSchedule: () => void;
+  onSubmit: (instruction: string) => void;
+}) {
+  const [instructions, setInstructions] = useState('');
+  const [runMode, setRunMode] = useState('once');
+
+  const handleRunModeChange = (value: string) => {
+    if (value === 'schedule') {
+      onSchedule();
+      return;
+    }
+    setRunMode(value);
+  };
+
+  return (
+    <CreatePageFrame
+      parent="Tasks"
+      title="Create task"
+      footer={
+        <>
+          <Button variant="outline" className="h-8 border-2 px-5 text-xs" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button className="h-8 px-5 text-xs" disabled={!instructions.trim() || busy} onClick={() => onSubmit(instructions)}>
+            Create task
+          </Button>
+        </>
+      }
+    >
+      <InstructionsPanel
+        value={instructions}
+        onChange={setInstructions}
+        placeholder="例如：分析最近 24 小时 validator peer count 和出块情况，生成 Markdown 巡检报告。"
+      />
+
+      <Panel title="When to run">
+        <RunModeRadioGroup value={runMode} onChange={handleRunModeChange} />
+      </Panel>
+    </CreatePageFrame>
+  );
+}
+
 function WorkspaceTopLine({ eyebrow, onExpand }: { eyebrow: string; onExpand: () => void }) {
   return (
     <div className="mb-5 flex items-center justify-between">
-      <div className="text-xs font-bold text-[#8f98a6]">{eyebrow}</div>
+      <div className="text-xs font-medium text-[#8f98a6]">{eyebrow}</div>
       <button className="text-[#c4cad5] hover:text-white" aria-label="Expand workspace" onClick={onExpand}>
         <Expand className="h-4 w-4" />
       </button>
@@ -1585,29 +2368,26 @@ function WorkspaceTopLine({ eyebrow, onExpand }: { eyebrow: string; onExpand: ()
 }
 
 function RequestUpdatesCard({ tasks }: { tasks: Task[] }) {
-  const latest = tasks[0];
+  const recentTasks = tasks.slice(0, 4);
   return (
-    <section className="rounded-lg border border-[#222b36] bg-[#121922] px-4 py-4">
-      <h2 className="text-base font-extrabold text-[#eef2f8]">Recent request updates</h2>
-      <p className="mt-1 text-xs font-semibold text-[#9aa3b2]">
+    <section className="rounded-lg border border-[#222b36] bg-[#121922] px-5 py-5">
+      <h2 className="text-lg font-semibold leading-tight text-[#eef2f8]">Recent request updates</h2>
+      <p className="mt-1 text-sm font-normal text-[#9aa3b2]">
         Latest status changes from your delegated tasks
       </p>
-      <div className="flex h-[86px] flex-col items-center justify-center text-center">
-        {latest ? (
-          <>
-            <div className="text-sm font-bold text-[#c8ced9]">{latest.name}</div>
-            <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-[#a4adbb]">
-              <StatusBadge status={latest.status} />
-              <span>{formatTime(latest.updatedAt)}</span>
+      <div className="mt-4 min-h-[84px] space-y-3">
+        {recentTasks.length > 0 ? (
+          recentTasks.map((task) => (
+            <div key={task.taskId} className="flex min-w-0 items-center gap-2 text-sm">
+              <span className="min-w-0 truncate font-medium text-[#8f82ff]">{task.name}</span>
+              <StatusBadge status={task.status} />
+              <span className="shrink-0 text-xs font-normal text-[#8f98a6]">{formatShortTime(task.updatedAt)}</span>
             </div>
-          </>
+          ))
         ) : (
-          <>
-            <div className="text-sm font-bold text-[#c8ced9]">No updates yet</div>
-            <div className="mt-2 text-sm font-semibold text-[#a4adbb]">
-              Status changes from tasks delegated to the NetX SRE Agent will appear here.
-            </div>
-          </>
+          <div className="flex min-h-[72px] items-center text-sm font-normal text-[#a4adbb]">
+            Status changes from tasks delegated to the NetX SRE Agent will appear here.
+          </div>
         )}
       </div>
     </section>
@@ -1616,36 +2396,76 @@ function RequestUpdatesCard({ tasks }: { tasks: Task[] }) {
 
 interface ResourceTableProps {
   actionLabel: string;
+  automations: Automation[];
   artifacts: Artifact[];
+  busy: boolean;
   description: string;
   documents: DocumentFile[];
+  highlightTaskId: string | null;
   searchPlaceholder: string;
+  selectedAutomationId: string | null;
+  selectedArtifactId: string | null;
+  selectedTaskId: string | null;
   tasks: Task[];
   title: string;
   view: ResourceView;
   onApproveTask: (taskId: string, response: 'approve' | 'reject') => void;
+  onCancelTask: (taskId: string) => void;
+  onClearHighlightTask: () => void;
+  onDeleteArtifact: (artifact: Artifact) => void;
+  onDownloadArtifact: (artifact: Artifact) => void;
+  onOpenAutomationDetail: (automation: Automation) => void;
+  onOpenArtifactDetail: (artifact: Artifact) => void;
+  onOpenTaskDetail: (task: Task) => void;
   onPrimaryAction: () => void;
   onRefresh: () => void;
+  onToggleAutomationEnabled: (automation: Automation) => void;
+  onDeleteAutomation: (automation: Automation) => void;
+  onTriggerAutomation: (automation: Automation) => void;
+  onUpdateAutomation: (automation: Automation, input: { name: string; description: string; instruction: string; schedule: AutomationSchedule }) => Promise<void>;
+  setSelectedAutomationId: (automationId: string | null) => void;
+  setSelectedTaskId: (taskId: string | null) => void;
 }
 
 function ResourceTable({
   actionLabel,
+  automations,
   artifacts,
   description,
   documents,
+  highlightTaskId,
   searchPlaceholder,
+  selectedAutomationId,
+  selectedArtifactId,
+  selectedTaskId,
   tasks,
   title,
   view,
   onApproveTask,
+  onCancelTask,
+  onClearHighlightTask,
+  onDeleteArtifact,
+  onDownloadArtifact,
+  onOpenAutomationDetail,
+  onOpenArtifactDetail,
+  onOpenTaskDetail,
   onPrimaryAction,
   onRefresh,
+  onToggleAutomationEnabled,
+  onDeleteAutomation,
+  onTriggerAutomation,
+  onUpdateAutomation,
+  setSelectedAutomationId,
+  setSelectedTaskId,
+  busy,
 }: ResourceTableProps) {
   const columns = resourceColumns[view];
   const empty = emptyTableConfig[view];
   const rowCount =
     view === 'tasks'
       ? tasks.length
+      : view === 'automations'
+        ? automations.length
       : view === 'artifacts'
         ? artifacts.length
         : view === 'context-files'
@@ -1655,51 +2475,49 @@ function ResourceTable({
     () => `34px ${columns.map((column) => column.width ?? '1fr').join(' ')} 26px`,
     [columns],
   );
+  const isTaskTable = view === 'tasks';
 
   return (
-    <section className="rounded-lg border border-[#222b36] bg-[#121922]">
-      <div className="flex items-start justify-between gap-4 px-4 pt-4">
+    <section className={cn('rounded-lg border border-[#222b36] bg-[#121922]', isTaskTable && 'mt-4')}>
+      <div className="flex items-start justify-between gap-4 px-5 pt-4">
         <div>
-          <h2 className="text-base font-extrabold text-[#eef2f8]">{title}</h2>
-          <p className="mt-1 text-xs font-semibold text-[#9aa3b2]">{description}</p>
+          <h2 className="text-lg font-semibold leading-tight text-[#eef2f8]">{title}</h2>
+          <p className="mt-1 text-sm font-normal text-[#9aa3b2]">{description}</p>
         </div>
 
         <div className="flex items-center gap-2">
           <Button className="h-8 w-8 border-2 p-0" variant="outline" aria-label="Refresh" onClick={onRefresh}>
             <RefreshCw className="h-4 w-4" />
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button className="h-8 border-2 px-4" variant="outline">
-                Actions
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={onRefresh}>Refresh</DropdownMenuItem>
-              <DropdownMenuItem>Copy table link</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem disabled>Export current view</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <ResourceActionsDropdown
+            artifacts={artifacts}
+            selectedArtifactId={selectedArtifactId}
+            selectedTaskId={selectedTaskId}
+            tasks={tasks}
+            view={view}
+            onCancelTask={onCancelTask}
+            onDeleteArtifact={onDeleteArtifact}
+            onDownloadArtifact={onDownloadArtifact}
+            onRefresh={onRefresh}
+          />
           {view !== 'artifacts' && (
-            <Button className="h-8 px-5 text-xs" onClick={onPrimaryAction}>
+            <Button className="h-8 px-5 text-sm font-medium" onClick={onPrimaryAction}>
               {actionLabel}
             </Button>
           )}
         </div>
       </div>
 
-      <div className="mt-3 flex items-center justify-between px-4">
-        <div className="relative w-[520px]">
+      <div className="mt-4 flex items-center justify-between px-5">
+        <div className={cn('relative', isTaskTable ? 'w-[640px] max-w-[68%]' : 'w-[520px]')}>
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8d97a6]" />
           <input
-            className="h-8 w-full rounded-md border border-[#3a4654] bg-[#121922] pl-9 pr-3 text-sm font-semibold italic text-[#dce1eb] outline-none placeholder:text-[#8f98a6] focus:border-[#8378ff]"
+            className="h-8 w-full rounded-md border border-[#3a4654] bg-[#121922] pl-9 pr-3 text-sm font-normal italic text-[#dce1eb] outline-none placeholder:text-[#8f98a6] focus:border-[#8378ff]"
             placeholder={searchPlaceholder}
           />
         </div>
 
-        <div className="flex items-center gap-4 text-sm font-bold text-[#c5ccd7]">
+        <div className="flex items-center gap-4 text-sm font-medium text-[#c5ccd7]">
           <ChevronLeft className="h-4 w-4 text-[#667180]" />
           <span>1</span>
           <ChevronRight className="h-4 w-4 text-[#667180]" />
@@ -1707,16 +2525,20 @@ function ResourceTable({
         </div>
       </div>
 
-      <div className="mt-3 overflow-hidden border-t border-[#222b36]">
+      <div className="mt-4 overflow-hidden border-t border-[#222b36]">
         <div
-          className="grid h-10 items-center border-b border-[#222b36] px-4 text-xs font-extrabold text-[#d3d8e2]"
+          className="grid h-9 items-center border-b border-[#222b36] px-5 text-[13px] font-semibold text-[#d3d8e2]"
           style={{ gridTemplateColumns }}
         >
           <input aria-label="Select all rows" className="h-3.5 w-3.5 accent-[#8f82ff]" type="checkbox" />
           {columns.map((column) => (
-            <div key={column.id} className="flex min-w-0 items-center justify-between border-l border-[#5b6574] px-3">
+            <div key={column.id} className="flex min-w-0 items-center justify-between border-l border-[#303b49] px-3">
               <span className="truncate">{column.label}</span>
-              <ChevronsUpDown className="h-3.5 w-3.5 text-[#9aa3b2]" />
+              {isTaskTable ? (
+                <ChevronDown className="h-3.5 w-3.5 text-[#8f98a6]" />
+              ) : (
+                <ChevronsUpDown className="h-3.5 w-3.5 text-[#9aa3b2]" />
+              )}
             </div>
           ))}
           <MoreHorizontal className="mx-auto h-4 w-4 text-[#9aa3b2]" />
@@ -1724,8 +2546,8 @@ function ResourceTable({
 
         {rowCount === 0 ? (
           <div className="flex min-h-[96px] flex-col items-center justify-center px-6 py-8 text-center">
-            <div className="text-sm font-bold text-[#d3d8e2]">{empty.title}</div>
-            <p className="mt-2 max-w-[560px] text-sm font-semibold text-[#9fa8b7]">{empty.description}</p>
+            <div className="text-sm font-semibold text-[#d3d8e2]">{empty.title}</div>
+            <p className="mt-2 max-w-[560px] text-sm font-normal text-[#9fa8b7]">{empty.description}</p>
             {view !== 'artifacts' && (
               <Button className="mt-4 h-8 border-2 px-5 text-xs" variant="outline" onClick={onPrimaryAction}>
                 {empty.action}
@@ -1736,14 +2558,43 @@ function ResourceTable({
           <div>
             {view === 'tasks' &&
               tasks.map((task) => (
-                <TaskRow key={task.taskId} gridTemplateColumns={gridTemplateColumns} task={task} onApproveTask={onApproveTask} />
+                <TaskRow
+                  key={task.taskId}
+                  gridTemplateColumns={gridTemplateColumns}
+                  highlighted={highlightTaskId === task.taskId}
+                  selected={selectedTaskId === task.taskId}
+                  task={task}
+                  onApproveTask={onApproveTask}
+                  onHighlightSeen={onClearHighlightTask}
+                  onOpenDetail={onOpenTaskDetail}
+                  onSelect={setSelectedTaskId}
+                />
+              ))}
+            {view === 'automations' &&
+              automations.map((automation) => (
+                <AutomationRow
+                  key={automation.automationId}
+                  automation={automation}
+                  busy={busy}
+                  gridTemplateColumns={gridTemplateColumns}
+                  selected={selectedAutomationId === automation.automationId}
+                  onDelete={onDeleteAutomation}
+                  onOpen={onOpenAutomationDetail}
+                  onRunOnce={onTriggerAutomation}
+                  onSelect={setSelectedAutomationId}
+                  onToggleEnabled={onToggleAutomationEnabled}
+                  onUpdate={onUpdateAutomation}
+                />
               ))}
             {view === 'artifacts' &&
               artifacts.map((artifact) => (
-                <DataRow
+                <ArtifactRow
                   key={artifact.artifactId}
+                  artifact={artifact}
                   gridTemplateColumns={gridTemplateColumns}
-                  values={[artifact.name, artifact.type, formatSize(artifact.size), formatTime(artifact.createdAt)]}
+                  selected={selectedArtifactId === artifact.artifactId}
+                  onOpen={onOpenArtifactDetail}
+                  onSelect={onOpenArtifactDetail}
                 />
               ))}
             {view === 'context-files' &&
@@ -1761,31 +2612,94 @@ function ResourceTable({
   );
 }
 
+function formatTaskRunType(task: Task) {
+  switch (task.source) {
+    case 'automation_schedule':
+      return 'Scheduled';
+    case 'automation_event':
+      return 'Event';
+    case 'automation_once':
+    case 'manual':
+    case 'chat':
+      return 'One-time';
+    default:
+      return humanizeToken(task.type || task.source || 'task');
+  }
+}
+
+function formatAutomationLabel(task: Task) {
+  return task.automationId ? task.automationId : '-';
+}
+
 function TaskRow({
   gridTemplateColumns,
+  highlighted,
+  selected,
   task,
   onApproveTask,
+  onHighlightSeen,
+  onOpenDetail,
+  onSelect,
 }: {
   gridTemplateColumns: string;
+  highlighted: boolean;
+  selected: boolean;
   task: Task;
   onApproveTask: (taskId: string, response: 'approve' | 'reject') => void;
+  onHighlightSeen: () => void;
+  onOpenDetail: (task: Task) => void;
+  onSelect: (taskId: string | null) => void;
 }) {
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (highlighted && rowRef.current) {
+      rowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const timer = window.setTimeout(() => onHighlightSeen(), 2000);
+      return () => window.clearTimeout(timer);
+    }
+  }, [highlighted, onHighlightSeen]);
+
   return (
-    <div className="grid min-h-12 items-center border-b border-[#202936] px-4 text-sm text-[#dce1eb]" style={{ gridTemplateColumns }}>
-      <input aria-label={`Select ${task.name}`} className="h-3.5 w-3.5 accent-[#8f82ff]" type="checkbox" />
-      <div className="truncate border-l border-[#303b49] px-3 font-semibold">{task.name}</div>
-      <div className="border-l border-[#303b49] px-3">
+    <div
+      ref={rowRef}
+      className={cn(
+        'grid min-h-[38px] cursor-pointer items-center border-b px-5 text-[13px] text-[#dce1eb]',
+        highlighted ? 'border-[#8f82ff]/40 bg-[#8f82ff]/10' : selected ? 'border-[#8f82ff]/40 bg-[#8f82ff]/10' : 'border-[#202936] hover:bg-[#151f2b]',
+      )}
+      style={{ gridTemplateColumns }}
+      onClick={() => onSelect(selected ? null : task.taskId)}
+    >
+      <input
+        aria-label={`Select ${task.name}`}
+        checked={selected}
+        className="h-3.5 w-3.5 accent-[#8f82ff]"
+        type="checkbox"
+        onChange={() => onSelect(selected ? null : task.taskId)}
+        onClick={(event) => event.stopPropagation()}
+      />
+      <div className="truncate border-l border-[#303b49] px-3 font-medium text-[#8f82ff] underline-offset-2 hover:underline">
+        <button
+          className="text-left"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenDetail(task);
+          }}
+        >
+          {task.name}
+        </button>
+      </div>
+      <div className="min-w-0 border-l border-[#303b49] px-3">
         <StatusBadge status={task.status} />
       </div>
-      <div className="truncate border-l border-[#303b49] px-3 capitalize">{task.priority}</div>
-      <div className="truncate border-l border-[#303b49] px-3">{task.type}</div>
-      <div className="truncate border-l border-[#303b49] px-3">{task.source}</div>
-      <div className="truncate border-l border-[#303b49] px-3">{formatTime(task.updatedAt)}</div>
+      <div className="truncate border-l border-[#303b49] px-3 font-normal text-[#cbd3df]">{formatPriority(task.priority)}</div>
+      <div className="truncate border-l border-[#303b49] px-3 font-normal text-[#aeb7c5]">{formatTaskRunType(task)}</div>
+      <div className="truncate border-l border-[#303b49] px-3 font-normal text-[#aeb7c5]">{formatAutomationLabel(task)}</div>
+      <div className="truncate border-l border-[#303b49] px-3 font-normal text-[#cbd3df]">{formatShortTime(task.updatedAt)}</div>
       <div className="flex justify-center">
         {task.status === 'AWAITING_INPUT' ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className="text-[#8f82ff]">
+              <button className="text-[#f1b54c]">
                 <ShieldAlert className="h-4 w-4" />
               </button>
             </DropdownMenuTrigger>
@@ -1802,12 +2716,13 @@ function TaskRow({
   );
 }
 
+
 function DataRow({ gridTemplateColumns, values }: { gridTemplateColumns: string; values: ReactNode[] }) {
   return (
     <div className="grid min-h-12 items-center border-b border-[#202936] px-4 text-sm text-[#dce1eb]" style={{ gridTemplateColumns }}>
       <input aria-label="Select row" className="h-3.5 w-3.5 accent-[#8f82ff]" type="checkbox" />
       {values.map((value, index) => (
-        <div key={index} className="truncate border-l border-[#303b49] px-3 font-semibold">
+        <div key={index} className="truncate border-l border-[#303b49] px-3 font-normal">
           {value}
         </div>
       ))}
@@ -1816,223 +2731,879 @@ function DataRow({ gridTemplateColumns, values }: { gridTemplateColumns: string;
   );
 }
 
-function StatusBadge({ status }: { status: Status }) {
-  const styles: Record<Status, string> = {
-    PENDING: 'border-slate-400/30 text-slate-300',
-    IN_PROGRESS: 'border-sky-400/30 text-sky-300',
-    AWAITING_INPUT: 'border-amber-400/40 text-amber-300',
-    COMPLETED: 'border-emerald-400/30 text-emerald-300',
-    SUCCESS: 'border-emerald-400/30 text-emerald-300',
-    FAILED: 'border-red-400/30 text-red-300',
-  };
-  const Icon = status === 'COMPLETED' || status === 'SUCCESS' ? Check : status === 'FAILED' ? XCircle : Clock;
-  return (
-    <span className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-bold', styles[status])}>
-      <Icon className="h-3 w-3" />
-      {status}
-    </span>
-  );
-}
-
-function CreateTaskForm({
-  busy,
-  onCancel,
-  onSubmit,
+function ResourceActionsDropdown({
+  artifacts,
+  selectedArtifactId,
+  selectedTaskId,
+  tasks,
+  view,
+  onCancelTask,
+  onDeleteArtifact,
+  onDownloadArtifact,
+  onRefresh,
 }: {
-  busy: boolean;
-  onCancel: () => void;
-  onSubmit: (instruction: string, priority: string) => void;
+  artifacts: Artifact[];
+  selectedArtifactId: string | null;
+  selectedTaskId: string | null;
+  tasks: Task[];
+  view: ResourceView;
+  onCancelTask: (taskId: string) => void;
+  onDeleteArtifact: (artifact: Artifact) => void;
+  onDownloadArtifact: (artifact: Artifact) => void;
+  onRefresh: () => void;
 }) {
-  const [instructions, setInstructions] = useState('');
-  const [runMode, setRunMode] = useState('once');
-  const [priority, setPriority] = useState('normal');
+  const selectedArtifact = selectedArtifactId ? artifacts.find((a) => a.artifactId === selectedArtifactId) : undefined;
+  const selectedTask = selectedTaskId ? tasks.find((t) => t.taskId === selectedTaskId) : undefined;
+  const isArtifacts = view === 'artifacts';
+  const isTasks = view === 'tasks';
+  const canCancel = selectedTask && !isTaskFinished(selectedTask.status);
 
   return (
-    <CreatePageFrame
-      parent="Tasks"
-      title="Create task"
-      footer={
-        <>
-          <Button variant="outline" className="h-8 border-2 px-5 text-xs" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button className="h-8 px-5 text-xs" disabled={!instructions.trim() || busy} onClick={() => onSubmit(instructions, priority)}>
-            Create task
-          </Button>
-        </>
-      }
-    >
-      <InstructionsPanel
-        value={instructions}
-        onChange={setInstructions}
-        placeholder="例如：分析最近 24 小时 validator peer count 和出块情况，生成 Markdown 巡检报告。"
-      />
-
-      <Panel title="When to run">
-        <RunModeRadioGroup value={runMode} onChange={setRunMode} />
-      </Panel>
-
-      <Panel title="Additional settings">
-        <Field label="Priority">
-          <Select value={priority} onValueChange={setPriority}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="low">Low</SelectItem>
-              <SelectItem value="normal">Normal</SelectItem>
-              <SelectItem value="high">High</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-      </Panel>
-    </CreatePageFrame>
-  );
-}
-
-function AutomationReserved({ onCancel }: { onCancel: () => void }) {
-  return (
-    <CreatePageFrame
-      parent="Automations"
-      title="Automation reserved for v2"
-      footer={
-        <Button variant="outline" className="h-8 border-2 px-5 text-xs" onClick={onCancel}>
-          Back
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button className="h-8 border-2 px-4" variant="outline">
+          Actions
+          <ChevronDown className="h-4 w-4" />
         </Button>
-      }
-    >
-      <Panel
-        title="第一版不包含 Automation"
-        description="requirements.md 明确第一版只实现 Chat、Task、Record、Artifact、Document 和 Web UI 审批。定时/事件触发、预授权 Automation 会在 v2 实现。"
-      >
-        <div className="text-sm font-semibold text-[#cbd3df]">
-          你仍然可以通过 Chat 或 Tasks workspace 创建 on-demand task。高风险操作会进入 Web UI 审批。
-        </div>
-      </Panel>
-    </CreatePageFrame>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {isArtifacts ? (
+          <>
+            <DropdownMenuItem
+              disabled={!selectedArtifact}
+              onClick={() => selectedArtifact && onDownloadArtifact(selectedArtifact)}
+            >
+              <Download className="mr-2 h-4 w-4" />
+              Download
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!selectedArtifact}
+              className="text-red-400 focus:text-red-400"
+              onClick={() => selectedArtifact && onDeleteArtifact(selectedArtifact)}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete
+            </DropdownMenuItem>
+          </>
+        ) : isTasks ? (
+          <DropdownMenuItem
+            disabled={!canCancel}
+            className="text-red-400 focus:text-red-400"
+            onClick={() => selectedTask && onCancelTask(selectedTask.taskId)}
+          >
+            <XCircle className="mr-2 h-4 w-4" />
+            取消
+          </DropdownMenuItem>
+        ) : (
+          <>
+            <DropdownMenuItem onClick={onRefresh}>Refresh</DropdownMenuItem>
+            <DropdownMenuItem>Copy table link</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem disabled>Export current view</DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
-interface CreatePageFrameProps {
-  parent: string;
-  title: string;
-  children: ReactNode;
-  footer: ReactNode;
+function isTaskFinished(status: Status) {
+  return status === 'COMPLETED' || status === 'SUCCESS' || status === 'FAILED' || status === 'CANCELLED';
 }
 
-function CreatePageFrame({ parent, title, children, footer }: CreatePageFrameProps) {
+function ArtifactRow({
+  artifact,
+  gridTemplateColumns,
+  selected,
+  onOpen,
+  onSelect,
+}: {
+  artifact: Artifact;
+  gridTemplateColumns: string;
+  selected: boolean;
+  onOpen: (artifact: Artifact) => void;
+  onSelect: (artifact: Artifact) => void;
+}) {
   return (
-    <div className="min-w-[760px] pb-8">
-      <div className="mb-5 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm font-bold">
-          <button className="text-[#8f82ff] underline underline-offset-2">{parent}</button>
-          <ChevronRight className="h-4 w-4 text-[#657080]" />
-          <span className="text-[#aab2bf]">{title}</span>
-        </div>
-        <button className="text-[#c4cad5] hover:text-white" aria-label="Expand workspace">
-          <Expand className="h-4 w-4" />
-        </button>
+    <div
+      className={cn(
+        'grid min-h-12 cursor-pointer items-center border-b px-4 text-sm text-[#dce1eb] transition',
+        selected
+          ? 'border-[#8f82ff]/40 bg-[#8f82ff]/15'
+          : 'border-[#202936] hover:bg-[#1a2330]',
+      )}
+      style={{ gridTemplateColumns }}
+      onClick={() => onOpen(artifact)}
+    >
+      <input
+        aria-label={`Select ${artifact.name}`}
+        checked={selected}
+        className="h-3.5 w-3.5 accent-[#8f82ff]"
+        type="checkbox"
+        onChange={() => onSelect(artifact)}
+        onClick={(event) => event.stopPropagation()}
+      />
+      <div className="truncate border-l border-[#303b49] px-3 font-medium text-[#8f82ff] hover:underline">
+        {artifact.name}
       </div>
-      <h2 className="mb-4 text-2xl font-extrabold text-[#eef2f8]">{title}</h2>
-      <div className="space-y-4">{children}</div>
-      <div className="mt-4 flex items-center gap-2">{footer}</div>
+      <div className="truncate border-l border-[#303b49] px-3">{artifact.type}</div>
+      <div className="truncate border-l border-[#303b49] px-3">{formatSize(artifact.size)}</div>
+      <div className="truncate border-l border-[#303b49] px-3">{formatTime(artifact.createdAt)}</div>
+      <MoreHorizontal className="mx-auto h-4 w-4 text-[#9aa3b2]" />
     </div>
   );
 }
 
-interface InstructionsPanelProps {
-  value: string;
-  onChange: (value: string) => void;
-  placeholder: string;
-}
-
-function InstructionsPanel({ value, onChange, placeholder }: InstructionsPanelProps) {
-  return (
-    <Panel
-      title="Instructions"
-      description="Describe in detail what you want the NetX SRE Agent to do. Be specific about services, time ranges, and desired output format."
-    >
-      <textarea
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        className="h-[106px] w-full resize-none rounded-md border border-[#3a4654] bg-[#121922] px-3 py-3 text-sm font-semibold leading-6 text-[#dce1eb] outline-none placeholder:text-[#a4adbb] focus:border-[#8378ff]"
-      />
-    </Panel>
-  );
-}
-
-interface PanelProps {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}
-
-function Panel({ title, description, children }: PanelProps) {
-  return (
-    <section className="rounded-lg border border-[#222b36] bg-[#121922] px-4 py-4">
-      <h3 className="text-lg font-extrabold text-[#eef2f8]">{title}</h3>
-      {description && <p className="mt-1 text-sm font-semibold text-[#9aa3b2]">{description}</p>}
-      <div className="mt-3">{children}</div>
-    </section>
-  );
-}
-
-function RunModeRadioGroup({
-  value,
-  onChange,
+function ArtifactDetailView({
+  artifact,
+  content,
+  onBack,
+  onDelete,
+  onDownload,
+  onOpenTask,
 }: {
-  value: string;
-  onChange: (value: string) => void;
+  artifact: Artifact;
+  content: string;
+  onBack: () => void;
+  onDelete: () => void;
+  onDownload: () => void;
+  onOpenTask: (taskId: string) => void;
 }) {
+  const previewDoc = useMemo(() => buildArtifactPreviewDoc(artifact, content), [artifact, content]);
+  const previewFrameRef = useRef<HTMLIFrameElement>(null);
+  const previewCleanupRef = useRef<(() => void) | null>(null);
+  const [previewHeight, setPreviewHeight] = useState(520);
+
+  const handlePreviewLoad = useCallback(() => {
+    previewCleanupRef.current?.();
+    previewCleanupRef.current = bindArtifactPreviewHeight(previewFrameRef.current, setPreviewHeight);
+  }, []);
+
+  useEffect(() => {
+    setPreviewHeight(520);
+    previewCleanupRef.current?.();
+    previewCleanupRef.current = null;
+  }, [previewDoc]);
+
+  useEffect(() => {
+    return () => {
+      previewCleanupRef.current?.();
+    };
+  }, []);
+
   return (
-    <RadioGroup value={value} onValueChange={onChange}>
-      {[
-        {
-          value: 'once',
-          label: 'Run once',
-          detail: 'Execute immediately as a one-time task',
-        },
-        {
-          value: 'schedule',
-          label: 'Run on a schedule',
-          detail: 'Reserved for v2 Automation',
-        },
-        {
-          value: 'event',
-          label: 'Run when an event occurs',
-          detail: 'Reserved for v2 Automation',
-        },
-      ].map((item) => (
-        <label key={item.value} className="flex cursor-pointer items-start gap-2">
-          <RadioGroupItem value={item.value} className="mt-0.5" />
-          <span>
-            <span className="block text-sm font-extrabold text-[#d9dee8]">{item.label}</span>
-            <span className="text-xs font-semibold text-[#8f98a6]">{item.detail}</span>
-          </span>
-        </label>
-      ))}
-    </RadioGroup>
+    <div className="agent-scrollbar min-h-full min-w-0 overflow-y-auto px-5 py-4">
+      <div className="min-w-[720px] pb-6">
+        <div className="mb-5 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <button className="text-[#8f82ff] underline underline-offset-2" onClick={onBack}>
+              Artifacts
+            </button>
+            <ChevronRight className="h-4 w-4 text-[#657080]" />
+            <span className="text-[#aab2bf]">Artifact details</span>
+          </div>
+          <button className="text-[#c4cad5] hover:text-white" aria-label="Back to artifacts" onClick={onBack}>
+            <Expand className="h-4 w-4" />
+          </button>
+        </div>
+
+        <section className="rounded-lg border border-[#222b36] bg-[#121922] p-5">
+          <div className="flex items-start justify-between gap-4">
+            <h2 className="text-lg font-semibold text-[#eef2f8]">{artifact.name}</h2>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button className="h-8 border-2 px-4" variant="outline">
+                  Actions
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={onDownload}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Download
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onDelete} className="text-red-400 focus:text-red-400">
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#8f98a6]">Artifact ID</div>
+              <div className="mt-1 flex items-center gap-2 font-mono text-sm text-[#f2f4f8]">
+                {artifact.artifactId}
+                <button
+                  className="text-[#8f82ff] hover:text-[#aaa2ff]"
+                  aria-label="Copy artifact ID"
+                  onClick={() => navigator.clipboard.writeText(artifact.artifactId)}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#8f98a6]">Type</div>
+              <div className="mt-1 text-sm text-[#dce1eb]">{artifact.type}</div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#8f98a6]">Size</div>
+              <div className="mt-1 text-sm text-[#dce1eb]">{formatSize(artifact.size)}</div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#8f98a6]">Created</div>
+              <div className="mt-1 text-sm text-[#dce1eb]">{formatTime(artifact.createdAt)}</div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#8f98a6]">Version</div>
+              <div className="mt-1 text-sm text-[#dce1eb]">{artifact.version ?? 1}</div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#8f98a6]">Source task</div>
+              <div className="mt-1 text-sm">
+                {artifact.taskId ? (
+                  <button
+                    className="font-mono text-[#8f82ff] hover:text-[#aaa2ff] hover:underline"
+                    onClick={() => onOpenTask(artifact.taskId!)}
+                  >
+                    {artifact.taskId}
+                  </button>
+                ) : (
+                  <span className="text-[#dce1eb]">-</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="mt-4 overflow-hidden rounded-lg border border-[#222b36] bg-[#121922]">
+          <div className="border-b border-[#222b36] px-5 py-4">
+            <h3 className="text-base font-semibold text-[#eef2f8]">Preview</h3>
+            <div className="mt-1 text-xs font-normal text-[#9aa3b2]">
+              {artifact.type} · {formatSize(artifact.size)}
+            </div>
+          </div>
+          <div className="bg-white" style={{ height: previewHeight }}>
+            <iframe
+              ref={previewFrameRef}
+              srcDoc={previewDoc}
+              title={artifact.name}
+              className="block h-full w-full border-0 bg-white"
+              sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+              onLoad={handlePreviewLoad}
+            />
+          </div>
+        </section>
+      </div>
+    </div>
   );
 }
 
-function Field({
-  label,
-  hint,
-  children,
+function TaskDetailView({
+  task,
+  records,
+  artifacts,
+  onBack,
+  onOpenArtifact,
 }: {
-  label: string;
-  hint?: string;
-  children: ReactNode;
+  task: Task;
+  records: RecordEntry[];
+  artifacts: Artifact[];
+  onBack: () => void;
+  onOpenArtifact: (artifact: Artifact) => void;
 }) {
+  const [activitiesExpanded, setActivitiesExpanded] = useState(false);
+  const [expandedActivityIds, setExpandedActivityIds] = useState<Set<string>>(new Set());
+  const resultContent = useMemo(() => {
+    for (let i = records.length - 1; i >= 0; i--) {
+      if (records[i].recordType === 'RESPONSE' && records[i].content) {
+        return records[i].content;
+      }
+    }
+    return '';
+  }, [records]);
+
+  const activities = useMemo(() => groupRecordsIntoActivities(records), [records]);
+
+  const expandAllActivities = useCallback(() => {
+    setActivitiesExpanded(true);
+    setExpandedActivityIds(new Set(activities.map((a) => a.id)));
+  }, [activities]);
+
+  const collapseAllActivities = useCallback(() => {
+    setExpandedActivityIds(new Set());
+  }, []);
+
+  const toggleActivity = useCallback((id: string) => {
+    setExpandedActivityIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setActivitiesExpanded(false);
+    setExpandedActivityIds(new Set());
+  }, [task.taskId]);
+
   return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-bold text-[#d8dee9]">{label}</span>
-      {children}
-      {hint && <span className="mt-1 block text-xs font-semibold text-[#8f98a6]">{hint}</span>}
-    </label>
+    <div className="agent-scrollbar min-h-full min-w-0 overflow-y-auto px-5 py-4">
+      <div className="min-w-[720px] pb-6">
+        <div className="mb-5 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <button className="text-[#8f82ff] underline underline-offset-2" onClick={onBack}>
+              Tasks
+            </button>
+            <ChevronRight className="h-4 w-4 text-[#657080]" />
+            <span className="text-[#aab2bf]">Task details</span>
+          </div>
+          <button className="text-[#c4cad5] hover:text-white" aria-label="Back to tasks" onClick={onBack}>
+            <Expand className="h-4 w-4" />
+          </button>
+        </div>
+
+        <h1 className="mb-5 text-xl font-semibold text-[#eef2f8]">{task.name || '未命名任务'}</h1>
+
+        <section className="rounded-lg border border-[#222b36] bg-[#121922] p-5">
+          <h2 className="text-base font-semibold text-[#eef2f8]">Task overview</h2>
+          <div className="mt-4 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#9aa3b2]">Status</div>
+              <div className="mt-1">
+                <StatusBadge status={task.status} />
+              </div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#9aa3b2]">Task ID</div>
+              <div className="mt-1 flex items-center gap-2 font-mono text-sm text-[#e2e8f0]">
+                {task.taskId}
+                <button
+                  className="text-[#8f82ff] hover:text-[#aaa2ff]"
+                  aria-label="Copy task ID"
+                  onClick={() => navigator.clipboard.writeText(task.taskId)}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#9aa3b2]">Priority</div>
+              <div className="mt-1 text-sm text-[#e2e8f0]">{formatPriority(task.priority)}</div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#9aa3b2]">Created at</div>
+              <div className="mt-1 text-sm text-[#e2e8f0]">{formatTime(task.createdAt)}</div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#9aa3b2]">Started at</div>
+              <div className="mt-1 text-sm text-[#e2e8f0]">{task.startedAt ? formatTime(task.startedAt) : '-'}</div>
+            </div>
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-[#9aa3b2]">Completed at</div>
+              <div className="mt-1 text-sm text-[#e2e8f0]">
+                {task.completedAt ? formatTime(task.completedAt) : '-'}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-lg border border-[#222b36] bg-[#121922] p-5">
+          <h2 className="text-base font-semibold text-[#eef2f8]">Instructions</h2>
+          <p className="mt-2 text-sm whitespace-pre-wrap text-[#aab2bf]">{task.instruction || '-'}</p>
+        </section>
+
+        {resultContent && (
+          <section className="mt-4 overflow-hidden rounded-lg border border-[#222b36] bg-[#121922]">
+            <div className="border-b border-[#222b36] px-5 py-4">
+              <h2 className="text-base font-semibold text-[#eef2f8]">Result</h2>
+            </div>
+            <div
+              className="prose prose-invert max-w-none px-5 py-4 text-sm text-[#aab2bf]"
+              dangerouslySetInnerHTML={{ __html: marked.parse(resultContent, { async: false }) as string }}
+            />
+          </section>
+        )}
+
+        <section className="mt-4 overflow-hidden rounded-lg border border-[#222b36] bg-[#121922]">
+          <div
+            className="flex w-full cursor-pointer items-center justify-between px-5 py-4 text-left"
+            onClick={() => setActivitiesExpanded((prev) => !prev)}
+          >
+            <div className="flex items-center gap-2">
+              {activitiesExpanded ? (
+                <ChevronDown className="h-4 w-4 text-[#c4cad5]" />
+              ) : (
+                <Play className="h-3 w-3 text-[#c4cad5]" />
+              )}
+              <h2 className="text-base font-semibold text-[#eef2f8]">Activities</h2>
+              <span className="rounded bg-[#5a6270] px-1.5 py-0.5 text-[11px] font-semibold leading-none text-[#f2f4f8]">
+                {activities.length}
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <Button
+                className="h-8 border-2 text-xs"
+                variant="outline"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  expandAllActivities();
+                }}
+              >
+                Expand all
+              </Button>
+              <Button
+                className="h-8 border-2 text-xs"
+                variant="outline"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  collapseAllActivities();
+                }}
+              >
+                Collapse all
+              </Button>
+              <ChevronDown
+                className={cn(
+                  'h-4 w-4 text-[#c4cad5] transition-transform',
+                  activitiesExpanded && 'rotate-180',
+                )}
+              />
+            </div>
+          </div>
+          {activitiesExpanded && (
+            <div className="border-t border-[#222b36]">
+              {activities.map((activity) => {
+                const expanded = expandedActivityIds.has(activity.id);
+                return (
+                  <div key={activity.id} className="border-b border-[#222b36] last:border-b-0">
+                    <div className="flex items-start gap-3 px-5 py-3">
+                      <div className="mt-0.5 shrink-0 text-[#8f82ff]">
+                        <Info className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 text-sm text-[#f2f4f8]">
+                          <span className="shrink-0 text-[#8f98a6]">{formatTime(activity.timestamp)}</span>
+                          <span className="font-medium text-[#f2f4f8]">{activity.title}</span>
+                          <span className="text-[#8f82ff]">{activity.subtitle}</span>
+                        </div>
+                        {expanded && (
+                          <div className="mt-3 space-y-3">
+                            {activity.request && (
+                              <div>
+                                <div className="mb-1 text-xs font-medium text-[#8f98a6]">Request</div>
+                                <pre className="max-h-96 overflow-auto rounded-md bg-[#0b0f14] p-3 text-xs text-[#f2f4f8]">
+                                  {activity.request}
+                                </pre>
+                              </div>
+                            )}
+                            {activity.response && (
+                              <div>
+                                <div className="mb-1 text-xs font-medium text-[#8f98a6]">Response</div>
+                                <pre className="max-h-96 overflow-auto rounded-md bg-[#0b0f14] p-3 text-xs text-[#f2f4f8]">
+                                  {activity.response}
+                                </pre>
+                              </div>
+                            )}
+                            {activity.content && (
+                              <div
+                                className="prose prose-invert max-w-none text-sm text-[#f2f4f8]"
+                                dangerouslySetInnerHTML={{
+                                  __html: marked.parse(activity.content, { async: false }) as string,
+                                }}
+                              />
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        className="shrink-0 text-xs text-[#8f82ff] hover:text-[#aaa2ff]"
+                        onClick={() => toggleActivity(activity.id)}
+                      >
+                        {expanded ? 'Collapse' : 'Expand'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {artifacts.length > 0 && (
+          <section className="mt-4 overflow-hidden rounded-lg border border-[#222b36] bg-[#121922]">
+            <div className="border-b border-[#222b36] px-5 py-4">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold text-[#eef2f8]">Generated files</h2>
+                <span className="rounded bg-[#5a6270] px-1.5 py-0.5 text-[11px] font-semibold leading-none text-[#f2f4f8]">
+                  {artifacts.length}
+                </span>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-[#222b36] text-xs font-semibold uppercase tracking-wide text-[#9aa3b2]">
+                    <th className="px-5 py-3 font-medium">File name</th>
+                    <th className="w-[140px] px-5 py-3 font-medium">Type</th>
+                    <th className="w-[100px] px-5 py-3 font-medium">Size</th>
+                    <th className="w-[260px] whitespace-nowrap px-5 py-3 font-medium">Created at</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {artifacts.map((artifact) => (
+                    <tr
+                      key={artifact.artifactId}
+                      className="cursor-pointer border-b border-[#222b36] last:border-b-0 hover:bg-[#1a222c]"
+                      onClick={() => onOpenArtifact(artifact)}
+                    >
+                      <td className="px-5 py-3">
+                        <span className="font-medium text-[#8f82ff] hover:text-[#aaa2ff] hover:underline">
+                          {artifact.name}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-[#e2e8f0]">{artifact.type}</td>
+                      <td className="px-5 py-3 text-[#e2e8f0]">{formatSize(artifact.size)}</td>
+                      <td className="whitespace-nowrap px-5 py-3 text-[#e2e8f0]">{formatTime(artifact.createdAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+      </div>
+    </div>
   );
 }
+
+function groupRecordsIntoActivities(records: RecordEntry[]) {
+  const sorted = [...records].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+  );
+  const grouped = new Map<
+    string,
+    { call?: RecordEntry; result?: RecordEntry; loadSkill?: RecordEntry; loadTool?: RecordEntry }
+  >();
+
+  for (const record of sorted) {
+    const toolUseId =
+      record.toolCall?.toolUseId ??
+      record.toolResult?.toolUseId ??
+      record.loadSkill?.toolUseId ??
+      record.loadTool?.toolUseId;
+    if (!toolUseId) continue;
+    const entry = grouped.get(toolUseId) ?? {};
+    switch (record.recordType) {
+      case 'TOOL_CALL':
+        entry.call = record;
+        break;
+      case 'TOOL_RESULT':
+        entry.result = record;
+        break;
+      case 'LOAD_SKILL':
+        entry.loadSkill = record;
+        break;
+      case 'LOAD_TOOL':
+        entry.loadTool = record;
+        break;
+    }
+    grouped.set(toolUseId, entry);
+  }
+
+  const processed = new Set<string>();
+  const activities: Array<{
+    id: string;
+    timestamp: string;
+    title: string;
+    subtitle: string;
+    content?: string;
+    request?: string;
+    response?: string;
+  }> = [];
+
+  for (const record of sorted) {
+    const toolUseId =
+      record.toolCall?.toolUseId ??
+      record.toolResult?.toolUseId ??
+      record.loadSkill?.toolUseId ??
+      record.loadTool?.toolUseId;
+
+    if (toolUseId && ['TOOL_CALL', 'TOOL_RESULT', 'LOAD_SKILL', 'LOAD_TOOL'].includes(record.recordType)) {
+      if (processed.has(toolUseId)) continue;
+      processed.add(toolUseId);
+      const entry = grouped.get(toolUseId);
+      if (!entry) continue;
+
+      if (entry.call || entry.result) {
+        const call = entry.call;
+        const result = entry.result;
+        const name =
+          call?.toolCall?.action ||
+          call?.toolCall?.toolName ||
+          result?.toolResult?.action ||
+          result?.toolResult?.skill ||
+          'tool';
+        activities.push({
+          id: `tool-${toolUseId}`,
+          timestamp: (call ?? result)!.createdAt,
+          title: 'Called tool',
+          subtitle: name,
+          request: call?.toolCall?.input ? prettyJson(call.toolCall.input) : undefined,
+          response: result?.toolResult?.output ? prettyJson(result.toolResult.output) : undefined,
+        });
+      } else if (entry.loadSkill) {
+        const r = entry.loadSkill;
+        activities.push({
+          id: r.recordId,
+          timestamp: r.createdAt,
+          title: 'Loaded skill',
+          subtitle: r.loadSkill?.skillName || '',
+          request: r.loadSkill?.input ? prettyJson(r.loadSkill.input) : undefined,
+          response: r.loadSkill?.output ? prettyJson(r.loadSkill.output) : undefined,
+        });
+      } else if (entry.loadTool) {
+        const r = entry.loadTool;
+        activities.push({
+          id: r.recordId,
+          timestamp: r.createdAt,
+          title: 'Loaded tool',
+          subtitle: r.loadTool?.toolName || '',
+          request: r.loadTool?.input ? prettyJson(r.loadTool.input) : undefined,
+          response: r.loadTool?.output ? prettyJson(r.loadTool.output) : undefined,
+        });
+      }
+      continue;
+    }
+
+    if (record.recordType === 'RESPONSE') {
+      activities.push({
+        id: record.recordId,
+        timestamp: record.createdAt,
+        title: 'Agent responded',
+        subtitle: '',
+        content: record.content,
+      });
+    } else if (record.recordType === 'STATUS') {
+      activities.push({
+        id: record.recordId,
+        timestamp: record.createdAt,
+        title: record.content || 'Status update',
+        subtitle: '',
+      });
+    } else if (record.recordType === 'ERROR') {
+      activities.push({
+        id: record.recordId,
+        timestamp: record.createdAt,
+        title: 'Error',
+        subtitle: '',
+        content: record.content,
+      });
+    } else if (record.recordType === 'THINKING') {
+      activities.push({
+        id: record.recordId,
+        timestamp: record.createdAt,
+        title: 'Thinking',
+        subtitle: '',
+        content: record.content,
+      });
+    } else if (record.recordType === 'MEMORY_ACCESS') {
+      activities.push({
+        id: record.recordId,
+        timestamp: record.createdAt,
+        title: 'Memory access',
+        subtitle: '',
+        content: record.content,
+      });
+    }
+  }
+
+  return activities;
+}
+
+function prettyJson(value: string): string {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function bindArtifactPreviewHeight(
+  frame: HTMLIFrameElement | null,
+  setHeight: (height: number) => void,
+) {
+  const doc = frame?.contentDocument;
+  if (!doc) {
+    return null;
+  }
+  const root = doc.documentElement;
+  const body = doc.body;
+  let raf = 0;
+
+  const measure = () => {
+    window.cancelAnimationFrame(raf);
+    raf = window.requestAnimationFrame(() => {
+      const bodyHeight = body
+        ? Math.max(body.scrollHeight, body.offsetHeight, body.getBoundingClientRect().height)
+        : 0;
+      const rootHeight = root
+        ? Math.max(root.scrollHeight, root.offsetHeight, root.getBoundingClientRect().height)
+        : 0;
+      setHeight(Math.max(360, Math.ceil(bodyHeight || rootHeight || 360)));
+    });
+  };
+
+  measure();
+  window.setTimeout(measure, 80);
+  window.setTimeout(measure, 300);
+
+  const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+  if (resizeObserver) {
+    if (root) {
+      resizeObserver.observe(root);
+    }
+    if (body) {
+      resizeObserver.observe(body);
+    }
+  }
+
+  const mutationObserver = body ? new MutationObserver(measure) : null;
+  mutationObserver?.observe(body, {
+    attributes: true,
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+  body?.addEventListener('toggle', measure, true);
+  frame?.contentWindow?.addEventListener('resize', measure);
+
+  return () => {
+    window.cancelAnimationFrame(raf);
+    resizeObserver?.disconnect();
+    mutationObserver?.disconnect();
+    body?.removeEventListener('toggle', measure, true);
+    frame?.contentWindow?.removeEventListener('resize', measure);
+  };
+}
+
+function buildArtifactPreviewDoc(artifact: Artifact, content: string) {
+  if (isHTMLArtifact(artifact, content)) {
+    return normalizeHTMLArtifact(content);
+  }
+  if (isMarkdownArtifact(artifact, content)) {
+    return renderMarkdownArtifact(content);
+  }
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <base target="_blank">
+    <style>
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background: #ffffff;
+        color: #1f2937;
+        font: 14px/1.55 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      }
+      body { padding: 24px; }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body><pre>${escapeHTML(content)}</pre></body>
+</html>`;
+}
+
+function isHTMLArtifact(artifact: Artifact, content: string) {
+  const name = artifact.name.toLowerCase();
+  const type = artifact.type.toLowerCase();
+  return (
+    name.endsWith('.html') ||
+    name.endsWith('.htm') ||
+    type.includes('html') ||
+    /^\s*(<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>])/i.test(content)
+  );
+}
+
+function isMarkdownArtifact(artifact: Artifact, _content: string) {
+  const name = artifact.name.toLowerCase();
+  const type = artifact.type.toLowerCase();
+  return name.endsWith('.md') || name.endsWith('.markdown') || type.includes('markdown');
+}
+
+function renderMarkdownArtifact(content: string) {
+  const html = marked.parse(content, { async: false }) as string;
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <base target="_blank">
+    <style>
+      html, body { margin: 0; min-height: 100%; background: #ffffff; color: #1f2937; font: 14px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { padding: 24px; max-width: 980px; margin: 0 auto; }
+      h1, h2, h3, h4, h5, h6 { margin-top: 24px; margin-bottom: 12px; line-height: 1.3; }
+      p { margin: 0 0 12px; }
+      pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow-x: auto; }
+      code { background: #f3f4f6; padding: 2px 4px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.9em; }
+      pre code { background: transparent; padding: 0; }
+      blockquote { border-left: 4px solid #e5e7eb; margin: 0 0 12px; padding-left: 16px; color: #4b5563; }
+      ul, ol { margin: 0 0 12px; padding-left: 24px; }
+      table { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
+      th, td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
+      th { background: #f9fafb; }
+      img { max-width: 100%; height: auto; }
+      a { color: #2563eb; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      hr { border: 0; border-top: 1px solid #e5e7eb; margin: 16px 0; }
+    </style>
+  </head>
+  <body>${html}</body>
+</html>`;
+}
+
+function normalizeHTMLArtifact(content: string) {
+  const trimmed = content.trimStart();
+  const hasDocument = /^\s*(<!doctype\s+html|<html[\s>])/i.test(content);
+  if (!hasDocument) {
+    return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <base target="_blank">
+    <style>html, body { margin: 0; min-height: 100%; }</style>
+  </head>
+  <body>${content}</body>
+</html>`;
+  }
+  let doc = trimmed;
+  if (!/<base\s/i.test(doc) && /<head[^>]*>/i.test(doc)) {
+    doc = doc.replace(/<head([^>]*)>/i, '<head$1><base target="_blank">');
+  }
+  if (!/<meta\s+charset=/i.test(doc) && /<head[^>]*>/i.test(doc)) {
+    doc = doc.replace(/<head([^>]*)>/i, '<head$1><meta charset="utf-8">');
+  }
+  return doc;
+}
+
+function escapeHTML(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 
 interface UploadContextDialogProps {
   busy: boolean;
@@ -2066,11 +3637,11 @@ function UploadContextDialog({ busy, open, onOpenChange, onUpload }: UploadConte
               <Upload className="h-4 w-4" />
               Choose file
             </Button>
-            <div className="mt-2 text-xs font-semibold text-[#9fa8b7]">
+            <div className="mt-2 text-xs font-normal text-[#9fa8b7]">
               {selectedFile ? `${selectedFile.name} (${formatSize(selectedFile.size)})` : 'Maximum file size: 10 MB'}
             </div>
           </div>
-          <div className="mt-2 text-xs font-semibold text-[#a4adbb]">
+          <div className="mt-2 text-xs font-normal text-[#a4adbb]">
             Supported formats: .txt, .csv, .json, .md, .html, .yaml, .yml
           </div>
         </div>
@@ -2108,7 +3679,7 @@ function buildTimelineItems(events: ChatEvent[]): TimelineItem[] {
   return items;
 }
 
-async function turnsToChatEvents(agentSpaceId: string, turns: Turn[]): Promise<ChatEvent[]> {
+async function turnsToChatEvents(agentSpaceName: string, turns: Turn[]): Promise<ChatEvent[]> {
   const allEvents: ChatEvent[] = [];
   for (const turn of turns) {
     const scopeKey = turnScope(turn.turnId);
@@ -2122,7 +3693,7 @@ async function turnsToChatEvents(agentSpaceId: string, turns: Turn[]): Promise<C
     ];
     try {
       const recordPage = await listRecords({
-        agentSpaceId,
+        agentSpaceName,
         conversationId: turn.conversationId,
         turnId: turn.turnId,
         maxResults: 100,
@@ -2140,9 +3711,9 @@ async function turnsToChatEvents(agentSpaceId: string, turns: Turn[]): Promise<C
     if (turn.taskId) {
       try {
         const [task, recordPage, artifactPage] = await Promise.all([
-          getTask(agentSpaceId, turn.taskId),
-          listRecords({ agentSpaceId, taskId: turn.taskId, maxResults: 100 }),
-          listArtifacts(agentSpaceId),
+          getTask(agentSpaceName, turn.taskId),
+          listRecords({ agentSpaceName, taskId: turn.taskId, maxResults: 100 }),
+          listArtifacts(agentSpaceName),
         ]);
         events.push(...recordsToChatEvents(recordPage.records ?? [], { scopeKey }));
         events.push(taskToChatEvent(task.entity, scopeKey));
@@ -2433,22 +4004,23 @@ function isTurnDone(turn: Turn) {
 }
 
 async function pollTurnRecords({
-  agentSpaceId,
+  agentSpaceName,
   conversationId,
   turnId,
   onUpdate,
 }: {
-  agentSpaceId: string;
+  agentSpaceName: string;
   conversationId: string;
   turnId: string;
   onUpdate: (turn: Turn, records: RecordEntry[]) => void;
 }) {
   let latestTurn: Turn | null = null;
   let latestRecords: RecordEntry[] = [];
-  for (let i = 0; i < 80; i += 1) {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
     const [turnPage, recordPage] = await Promise.all([
-      getTurn(agentSpaceId, conversationId, turnId),
-      listRecords({ agentSpaceId, conversationId, turnId, maxResults: 100 }),
+      getTurn(agentSpaceName, conversationId, turnId),
+      listRecords({ agentSpaceName, conversationId, turnId, maxResults: 100 }),
     ]);
     latestTurn = turnPage.turn;
     latestRecords = recordPage.records ?? [];
@@ -2456,7 +4028,7 @@ async function pollTurnRecords({
     if (isTurnDone(latestTurn)) {
       return latestTurn;
     }
-    await sleep(400);
+    await sleep(POLL_INTERVAL_MS);
   }
   if (latestTurn) {
     onUpdate(latestTurn, latestRecords);
@@ -2529,13 +4101,14 @@ function statusLabelForRecord(recordType: RecordEntry['recordType']) {
   return labels[recordType];
 }
 
-async function pollTask(agentSpaceId: string, taskId: string) {
-  for (let i = 0; i < 40; i += 1) {
-    const task = await getTask(agentSpaceId, taskId);
+async function pollTask(agentSpaceName: string, taskId: string) {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const task = await getTask(agentSpaceName, taskId);
     if (task.entity.status === 'COMPLETED' || task.entity.status === 'FAILED' || task.entity.status === 'AWAITING_INPUT') {
       return task.entity;
     }
-    await sleep(300);
+    await sleep(POLL_INTERVAL_MS);
   }
   throw new Error('Task polling timed out');
 }
@@ -2544,15 +4117,6 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function formatTime(value?: string) {
-  if (!value) return '-';
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
-}
 
 function formatSize(size: number) {
   if (size < 1024) return `${size} B`;

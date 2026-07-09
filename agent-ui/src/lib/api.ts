@@ -1,4 +1,4 @@
-export type Status = 'PENDING' | 'IN_PROGRESS' | 'AWAITING_INPUT' | 'COMPLETED' | 'SUCCESS' | 'FAILED';
+export type Status = 'PENDING' | 'IN_PROGRESS' | 'AWAITING_INPUT' | 'COMPLETED' | 'SUCCESS' | 'FAILED' | 'CANCELLED';
 
 export type SkillOutputStatus = 'ok' | 'error' | 'partial' | 'pending';
 
@@ -35,7 +35,6 @@ export interface SkillOutput {
 }
 
 export interface AgentSpace {
-  agentSpaceId: string;
   name: string;
   description?: string;
   llm?: LLMConfig;
@@ -63,7 +62,7 @@ export interface WeComConfig {
 
 export interface Conversation {
   conversationId: string;
-  agentSpaceId: string;
+  agentSpaceName: string;
   title: string;
   createdAt?: string;
   updatedAt?: string;
@@ -77,7 +76,7 @@ export interface TurnOutput {
 export interface Turn {
   turnId: string;
   conversationId: string;
-  agentSpaceId: string;
+  agentSpaceName: string;
   status: Status;
   statusReason?: string;
   prompt: string;
@@ -124,7 +123,7 @@ export interface LoadToolRecord {
 
 export interface RecordEntry {
   recordId: string;
-  agentSpaceId: string;
+  agentSpaceName: string;
   taskId?: string;
   conversationId?: string;
   turnId?: string;
@@ -140,35 +139,68 @@ export interface RecordEntry {
 
 export interface Task {
   taskId: string;
-  agentSpaceId: string;
+  agentSpaceName: string;
   name: string;
   description?: string;
   status: Status;
   priority: string;
   type: string;
   source: string;
+  automationId?: string;
   instruction: string;
   requiresApproval: boolean;
   artifacts?: string[];
   createdAt: string;
   updatedAt: string;
+  startedAt?: string;
   completedAt?: string;
+}
+
+export type AutomationStatus = 'ACTIVE' | 'DISABLED';
+export type AutomationFrequency = 'hourly' | 'daily' | 'weekly' | 'monthly';
+
+export interface AutomationSchedule {
+  frequency: AutomationFrequency;
+  interval: number;
+  minute: number;
+  hour: number;
+  dayOfWeek?: number;
+  dayOfMonth?: number;
+  timezone: string;
+  cron?: string;
+  summary?: string;
+}
+
+export interface Automation {
+  automationId: string;
+  agentSpaceName: string;
+  name: string;
+  description?: string;
+  instruction: string;
+  triggerType: 'schedule';
+  status: AutomationStatus;
+  enabled: boolean;
+  schedule: AutomationSchedule;
+  lastTriggeredAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Artifact {
   artifactId: string;
-  agentSpaceId: string;
+  agentSpaceName: string;
   taskId?: string;
   name: string;
   type: string;
   size: number;
+  version?: number;
   path: string;
   createdAt: string;
 }
 
 export interface DocumentFile {
   documentId: string;
-  agentSpaceId: string;
+  agentSpaceName: string;
   name: string;
   contentType?: string;
   size: number;
@@ -205,16 +237,27 @@ export interface CreateAgentSpaceInput {
 }
 
 export interface UpdateAgentSpaceInput {
-  agentSpaceId: string;
-  name?: string;
+  name: string;
   description?: string;
   llm?: LLMConfig;
   environment?: Record<string, string>;
   integrations?: Integrations;
 }
 
+export interface CreateAutomationInput {
+  agentSpaceName: string;
+  name: string;
+  description?: string;
+  instruction: string;
+  schedule: AutomationSchedule;
+}
+
 export function listAgentSpaces() {
   return post<PageResponse<AgentSpace>>('/listAgentSpaces', {});
+}
+
+export function getAgentSpace(agentSpaceName: string) {
+  return post<EntityResponse<AgentSpace>>('/getAgentSpace', { agentSpaceName });
 }
 
 export function createAgentSpace(input: CreateAgentSpaceInput) {
@@ -225,90 +268,150 @@ export function updateAgentSpace(input: UpdateAgentSpaceInput) {
   return post<EntityResponse<AgentSpace>>('/updateAgentSpace', input);
 }
 
-export function deleteAgentSpace(agentSpaceId: string) {
-  return post<EntityResponse<{ agentSpaceId: string }>>('/deleteAgentSpace', {
-    agentSpaceId,
+export function deleteAgentSpace(agentSpaceName: string) {
+  return post<EntityResponse<{ agentSpaceName: string }>>('/deleteAgentSpace', {
+    agentSpaceName,
   });
 }
 
-export function listConversations(agentSpaceId: string, maxResults = 20) {
+export function listConversations(agentSpaceName: string, maxResults = 20) {
   return post<PageResponse<Conversation>>('/listConversations', {
-    agentSpaceId,
+    agentSpaceName,
     maxResults,
   });
 }
 
-export function createConversation(agentSpaceId: string, title: string) {
+export function createConversation(agentSpaceName: string, title: string) {
   return post<EntityResponse<Conversation>>('/createConversation', {
-    agentSpaceId,
+    agentSpaceName,
     title,
   });
 }
 
-export function getConversation(agentSpaceId: string, conversationId: string) {
+export function getConversation(agentSpaceName: string, conversationId: string) {
   return post<EntityResponse<Conversation> & { turns?: Turn[] }>('/getConversation', {
-    agentSpaceId,
+    agentSpaceName,
     conversationId,
   });
 }
 
-export function deleteConversation(agentSpaceId: string, conversationId: string) {
+export function deleteConversation(agentSpaceName: string, conversationId: string) {
   return post<EntityResponse<{ conversationId: string }>>('/deleteConversation', {
-    agentSpaceId,
+    agentSpaceName,
     conversationId,
   });
 }
 
-export function createTurn(agentSpaceId: string, conversationId: string, prompt: string) {
+export function createTurn(agentSpaceName: string, conversationId: string, prompt: string) {
   return post<TurnResponse>('/createTurn', {
-    agentSpaceId,
+    agentSpaceName,
     conversationId,
     prompt,
   });
 }
 
-export function getTurn(agentSpaceId: string, conversationId: string, turnId: string) {
+export function getTurn(agentSpaceName: string, conversationId: string, turnId: string) {
   return post<TurnResponse>('/getTurn', {
-    agentSpaceId,
+    agentSpaceName,
     conversationId,
     turnId,
   });
 }
 
-export function listTasks(agentSpaceId: string) {
+export function listTasks(agentSpaceName: string) {
   return post<PageResponse<Task>>('/listTasks', {
-    agentSpaceId,
+    agentSpaceName,
     maxResults: 100,
   });
 }
 
-export function createTask(agentSpaceId: string, instruction: string, priority: string) {
+export function createTask(agentSpaceName: string, instruction: string, priority = 'normal') {
   return post<EntityResponse<Task>>('/createTask', {
-    agentSpaceId,
+    agentSpaceName,
     instruction,
     priority,
     type: 'diagnosis',
+    source: 'automation_once',
   });
 }
 
-export function getTask(agentSpaceId: string, taskId: string) {
+export function getTask(agentSpaceName: string, taskId: string) {
   return post<EntityResponse<Task>>('/getTask', {
-    agentSpaceId,
+    agentSpaceName,
     taskId,
   });
 }
 
-export function respondToTask(agentSpaceId: string, taskId: string, response: 'approve' | 'reject') {
+export function respondToTask(agentSpaceName: string, taskId: string, response: 'approve' | 'reject') {
   return post<EntityResponse<Task>>('/respondToTask', {
-    agentSpaceId,
+    agentSpaceName,
     taskId,
     response,
     userId: 'web-ui',
   });
 }
 
+export function cancelTask(agentSpaceName: string, taskId: string) {
+  return post<EntityResponse<Task>>('/cancelTask', {
+    agentSpaceName,
+    taskId,
+  });
+}
+
+export function listAutomations(agentSpaceName: string) {
+  return post<PageResponse<Automation>>('/listAutomations', {
+    agentSpaceName,
+    maxResults: 100,
+  });
+}
+
+export function createAutomation(input: CreateAutomationInput) {
+  return post<EntityResponse<Automation>>('/createAutomation', input);
+}
+
+export function getAutomation(agentSpaceName: string, automationId: string) {
+  return post<EntityResponse<Automation>>('/getAutomation', {
+    agentSpaceName,
+    automationId,
+  });
+}
+
+export function updateAutomationEnabled(agentSpaceName: string, automationId: string, enabled: boolean) {
+  return post<EntityResponse<Automation>>('/updateAutomation', {
+    agentSpaceName,
+    automationId,
+    enabled,
+  });
+}
+
+export function updateAutomation(
+  agentSpaceName: string,
+  automationId: string,
+  input: { name?: string; description?: string; instruction?: string; schedule?: AutomationSchedule },
+) {
+  return post<EntityResponse<Automation>>('/updateAutomation', {
+    agentSpaceName,
+    automationId,
+    ...input,
+  });
+}
+
+export function deleteAutomation(agentSpaceName: string, automationId: string) {
+  return post<{ success: boolean }>('/deleteAutomation', {
+    agentSpaceName,
+    automationId,
+  });
+}
+
+export function triggerAutomation(agentSpaceName: string, automationId: string) {
+  return post<EntityResponse<Task>>('/triggerAutomation', {
+    agentSpaceName,
+    automationId,
+  });
+}
+
 export function listRecords(input: {
-  agentSpaceId: string;
+  agentSpaceName: string;
   taskId?: string;
   conversationId?: string;
   turnId?: string;
@@ -320,24 +423,38 @@ export function listRecords(input: {
   });
 }
 
-export function listArtifacts(agentSpaceId: string) {
+export function listArtifacts(agentSpaceName: string) {
   return post<PageResponse<Artifact>>('/listArtifacts', {
-    agentSpaceId,
+    agentSpaceName,
     maxResults: 100,
   });
 }
 
-export function listDocuments(agentSpaceId: string) {
+export function getArtifact(agentSpaceName: string, artifactId: string) {
+  return post<{ entity: Artifact; content: string }>('/getArtifact', {
+    agentSpaceName,
+    artifactId,
+  });
+}
+
+export function deleteArtifact(agentSpaceName: string, artifactId: string) {
+  return post<EntityResponse<{ artifactId: string }>>('/deleteArtifact', {
+    agentSpaceName,
+    artifactId,
+  });
+}
+
+export function listDocuments(agentSpaceName: string) {
   return post<PageResponse<DocumentFile>>('/listDocuments', {
-    agentSpaceId,
+    agentSpaceName,
     maxResults: 100,
   });
 }
 
-export async function createDocument(agentSpaceId: string, file: File) {
+export async function createDocument(agentSpaceName: string, file: File) {
   const contentBase64 = await fileToBase64(file);
   return post<EntityResponse<DocumentFile>>('/createDocument', {
-    agentSpaceId,
+    agentSpaceName,
     name: file.name,
     contentType: file.type || 'application/octet-stream',
     contentBase64,

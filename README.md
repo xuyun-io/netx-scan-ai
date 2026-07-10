@@ -1,127 +1,188 @@
-# NetX SRE Agent
+# NetX AI
 
-面向 NetX Chain287 的 AI 运维助手，all-in-one 单容器部署。
+NetX AI is a self-hosted Chain287 SRE agent workspace. It combines a Go backend, a React workspace UI, Google ADK-Go based agent execution, file-backed persistence, scheduled automations, skill tools, artifacts, and Enterprise WeChat notifications.
 
-- **后端**：Go + Google ADK-Go v2
-- **前端**：React + TypeScript + Vite + Tailwind CSS + shadcn/ui
-- **持久化**：文本文件（YAML/JSONL/Markdown）
-- **部署**：单容器 Docker
+The project is designed for operators who need a practical internal agent system rather than a general-purpose SaaS platform.
 
-## 快速开始
+## Highlights
 
-### 本地开发
+- Multi-AgentSpace management with isolated model config, environment variables, integrations, and records.
+- Chat conversations backed by ADK turn execution.
+- Manual tasks, approval-aware tasks, and scheduled automations.
+- Chain287 read-only inspection skills and report artifact generation.
+- Gemini and Gemini-compatible relay support.
+- Enterprise WeChat notifications and an optional agent system tool.
+- File-backed storage using YAML, JSONL, Markdown, uploaded files, and generated artifacts.
+- All-in-one Docker image that serves the frontend and backend from one process.
+
+## Architecture
+
+```text
+React UI
+  |
+  | /api/v1 JSON
+  v
+Go agent server
+  |
+  +-- File store for AgentSpaces, tasks, automations, records, documents, artifacts
+  +-- Google ADK-Go runner
+  +-- Skill runner for Chain287 inspection tools
+  +-- Enterprise WeChat notification client
+  |
+  v
+Gemini or Gemini relay
+```
+
+See [Architecture](docs/architecture.md) for details.
+
+## Quick Start
+
+### 1. Start the Backend
 
 ```bash
-# 启动后端
 cd agent-server
+cp config/app.yaml.example config/app.yaml
 go run .
+```
 
-# 启动前端（新终端）
+The API listens on:
+
+```text
+http://127.0.0.1:8080
+```
+
+### 2. Start the Frontend
+
+In a second terminal:
+
+```bash
 cd agent-ui
 npm install
 npm run dev
 ```
 
-前端开发服务器：`http://localhost:5173`  
-后端 API：`http://127.0.0.1:8080`
-
-### Docker 构建运行
-
-先复制并编辑配置文件：
-
-```bash
-cp agent-server/config/app.yaml.example agent-server/config/app.yaml
-# 本地开发保持 path.root: .
-# Docker 部署时改为 path.root: /app，并配置 publicURL、auth 等
-```
-
-然后启动：
-
-```bash
-docker-compose up --build -d
-```
-
-服务暴露：`http://localhost:8080`
-
-生产部署时请把 `config/app.yaml` 中的 `publicURL` 改成企业微信接收人可访问的域名或内网地址。
-
-## 配置
-
-所有服务端运行配置集中到 `agent-server/config/app.yaml`。复制示例文件并修改：
-
-```bash
-cp agent-server/config/app.yaml.example agent-server/config/app.yaml
-```
-
-### 服务端配置项
-
-| 配置项 | 说明 | 默认值 |
-|---|---|---|
-| `httpAddr` | HTTP 监听地址 | `:8080` |
-| `path.root` | 基础路径，其他相对路径都基于它解析 | `.` |
-| `path.agents` | AgentSpace 文本数据目录（相对或绝对路径） | `data/agents` |
-| `path.web` | 前端静态文件目录（相对或绝对路径） | `web/dist` |
-| `path.skills` | Skill 脚本目录（相对或绝对路径） | `skills` |
-| `publicURL` | 用户可访问的 Web UI 外部地址，例如 `https://netx-agent.example.com`。企业微信通知会用它生成任务详情链接；如果不配置，通知里不会出现可点击入口 | 空 |
-| `logLevel` | 后端日志级别：`debug` / `info` / `warn` / `error` | `info` |
-| `logFormat` | 后端日志格式：`json` / `console` | `json` |
-| `auth.username` / `auth.password` | Basic Auth 登录凭据（均非空时启用登录） | 空 |
-
-示例：
-
-```yaml
-httpAddr: :8080
-path:
-  root: .
-  agents: data/agents
-  web: web/dist
-  skills: skills
-publicURL: ""
-logLevel: info
-logFormat: json
-
-auth:
-  username: admin
-  password: your-strong-password
-```
-
-启用 `auth` 后，所有 `/api/v1/*` 接口（除 `/api/v1/login` 用于校验）以及前端页面都需要登录。未配置 `auth` 时，系统不启用登录，与之前行为一致。
-
-`publicURL` 必须填写企业微信接收人能够访问的地址，不要使用容器内部地址。常见示例：
-
-```yaml
-publicURL: https://netx-agent.example.com
-publicURL: http://10.0.1.20:8080
-```
-
-配置后，自动化完成通知会包含类似：
+Open:
 
 ```text
-查看任务: 打开任务详情
+http://localhost:5173
 ```
 
-点击后进入 `/{agentSpaceName}/#/task/{taskId}`，可以查看任务记录和 Artifacts 产物。
+### 3. Create an AgentSpace
 
-### Agent/Skill 执行环境变量
+Use the Admin UI to create an AgentSpace and configure:
 
-首次启动后进入 Admin 页面创建 AgentSpace，并在 AgentSpace 环境变量中配置：
+- LLM provider and model.
+- API key or relay API key.
+- `CHAIN287_RPC_URL`.
+- Optional Enterprise WeChat webhook.
 
-| 环境变量 | 说明 |
-|---|---|
-| `CHAIN287_RPC_URL` | Chain287 RPC 节点地址 |
-| `ETH_RPC_URL` | 兼容 Ethereum RPC 地址（fallback） |
-| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Gemini LLM API Key |
+## Docker Compose
 
-## 项目结构
+Create and edit the config:
+
+```bash
+cp agent-server/config/app.yaml.example agent-server/config/app.yaml
+```
+
+For Docker Compose, set:
+
+```yaml
+path:
+  root: /app
+publicURL: https://netx-agent.example.com
+```
+
+Start:
+
+```bash
+docker compose up --build -d
+```
+
+Open:
+
+```text
+http://localhost:8080
+```
+
+See [Deployment](docs/deployment.md) for production notes.
+
+## Model Providers
+
+Direct Gemini:
+
+```yaml
+llm:
+  provider: gemini
+  model: gemini-2.5-pro
+  apiKey: your-gemini-api-key
+```
+
+Gemini relay:
+
+```yaml
+llm:
+  provider: gemini-relay
+  model: gemini-2.5-pro
+  apiKey: your-relay-api-key
+  baseUrl: https://relay.example.com
+```
+
+`baseUrl` must be the relay root URL. Do not include `/v1beta`.
+
+LLM config is AgentSpace-scoped. Application runtime config belongs in `agent-server/config/app.yaml`.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Architecture](docs/architecture.md)
+- [Configuration](docs/configuration.md)
+- [Development](docs/development.md)
+- [Deployment](docs/deployment.md)
+- [API Reference](docs/api.md)
+- [API Examples](docs/api-examples.md)
+- [Skills and Tools](docs/skills-and-tools.md)
+- [Integrations](docs/integrations.md)
+- [Operations](docs/operations.md)
+- [Documentation References](docs/references.md)
+
+## Project Layout
 
 ```text
 netx-ai/
-├── agent-server/      # Go 后端
-├── agent-ui/          # React 前端
-├── docs/              # 设计文档与需求
-└── README.md          # 本文件
+├── agent-server/      # Go backend, ADK runtime, scheduler, skills
+├── agent-ui/          # React frontend
+├── docs/              # Maintained documentation
+├── k8s/               # Kubernetes starter manifests
+├── Dockerfile
+└── docker-compose.yml
 ```
 
-## 文档
+## Development Commands
 
-详细设计、需求与参考分析见 [docs/](docs/)。
+Backend:
+
+```bash
+cd agent-server
+go test ./...
+go run .
+```
+
+Frontend:
+
+```bash
+cd agent-ui
+npm install
+npm run build
+```
+
+## Security Notes
+
+- Do not commit `agent-server/config/app.yaml`.
+- Do not commit model API keys, Enterprise WeChat webhook URLs, or private RPC endpoints.
+- Enable Basic auth outside local development.
+- Back up `agent-server/data/agents` before upgrades.
+- Review new skills before enabling them in production.
+
+## License
+
+No open-source license file is currently included. Treat this repository as internal unless a license is added.

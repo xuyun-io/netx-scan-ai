@@ -129,7 +129,7 @@ export function workspaceArtifactHash(artifactId: string) {
 }
 
 export function parseAgentSpaceNameFromPath(): string | null {
-  const path = window.location.pathname.replace(/^\/+|\/+$/g, '');
+  const path = trimPathSlashes(window.location.pathname);
   if (!path || path === '') return null;
   return path;
 }
@@ -152,4 +152,18 @@ function decodeHashId(hash: string, prefixes: string[]) {
   if (!prefix) return null;
   const rawId = hash.replace(prefix, '').split('?')[0];
   return rawId ? decodeURIComponent(rawId) : null;
+}
+
+function trimPathSlashes(value: string) {
+  let start = 0;
+  let end = value.length;
+
+  while (start < end && value.charCodeAt(start) === 47) {
+    start += 1;
+  }
+  while (end > start && value.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+
+  return value.slice(start, end);
 }

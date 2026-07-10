@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Copy,
   Expand,
-  MoreHorizontal,
   Search,
   Settings,
   Trash2,
@@ -36,6 +35,7 @@ import {
   inputClassName,
   ScheduleEditor,
 } from '@/components/automations/editor';
+import { RESOURCE_TIME_COLUMN_WIDTH } from '@/data/tableColumns';
 import { cn, formatPriority, formatShortTime, formatTime, humanizeToken } from '@/lib/utils';
 import type { Automation, AutomationFrequency, AutomationSchedule, Task } from '@/lib/api';
 
@@ -224,7 +224,7 @@ function AutomationStatusBadge({ automation }: { automation: Automation }) {
 }
 
 function AutomationTasksTable({ tasks, onOpenTask }: { tasks: Task[]; onOpenTask: (task: Task) => void }) {
-  const gridTemplateColumns = 'minmax(260px,1.4fr) 170px 130px 210px 26px';
+  const gridTemplateColumns = `minmax(260px,1.4fr) 170px 130px ${RESOURCE_TIME_COLUMN_WIDTH}`;
   return (
     <div className="mt-4 overflow-hidden border-t border-[#222b36]">
       <div
@@ -237,7 +237,6 @@ function AutomationTasksTable({ tasks, onOpenTask }: { tasks: Task[]; onOpenTask
             <ChevronDown className="h-3.5 w-3.5 text-[#8f98a6]" />
           </div>
         ))}
-        <MoreHorizontal className="mx-auto h-4 w-4 text-[#9aa3b2]" />
       </div>
       {tasks.length === 0 ? (
         <div className="flex min-h-[80px] items-center px-3 text-sm font-normal text-[#9fa8b7]">
@@ -270,7 +269,6 @@ function AutomationTasksTable({ tasks, onOpenTask }: { tasks: Task[]; onOpenTask
             <div className="truncate border-l border-[#303b49] px-3 font-normal text-[#cbd3df]">
               {formatShortTime(task.updatedAt)}
             </div>
-            <MoreHorizontal className="mx-auto h-4 w-4 text-[#9aa3b2]" />
           </div>
         ))
       )}

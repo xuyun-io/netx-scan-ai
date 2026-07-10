@@ -7,6 +7,9 @@ services:
     container_name: netx-sre-agent
     ports:
       - "8080:8080"
+    # 所有配置集中到 ./agent-server/config/app.yaml，参考 config/app.yaml.example
+    # 容器内工作目录为 /app，app.yaml 中 path.root 建议设为 /app
     volumes:
-      - ./agent-server/data/agents:/data/agents
+      - ./agent-server/data/agents:/app/data/agents
       - ./agent-server/skills:/app/skills:ro
+      - ./agent-server/config/app.yaml:/app/config/app.yaml:ro

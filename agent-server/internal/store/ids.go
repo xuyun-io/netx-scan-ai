@@ -33,10 +33,10 @@ func SafeName(name string) string {
 	return name
 }
 
-func NewAgentSpaceID() string   { return newID("as") }
 func NewConversationID() string { return newID("conv") }
 func NewTurnID() string         { return newID("turn") }
 func NewTaskID() string         { return newID("task") }
+func NewAutomationID() string   { return newID("automation") }
 func NewRecordID() string       { return newID("rec") }
 func NewArtifactID() string     { return newID("artifact") }
 func NewDocumentID() string     { return newID("doc") }

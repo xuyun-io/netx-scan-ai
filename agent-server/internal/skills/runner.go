@@ -28,17 +28,18 @@ type Runner struct {
 }
 
 type ActionResult struct {
-	Skill       string        `json:"skill"`
-	Action      string        `json:"action"`
-	Description string        `json:"description,omitempty"`
-	Command     string        `json:"command,omitempty"`
-	ReadOnly    bool          `json:"readonly"`
-	Approval    bool          `json:"approval"`
-	Stdout      string        `json:"stdout,omitempty"`
-	Stderr      string        `json:"stderr,omitempty"`
-	Output      *SkillOutput  `json:"output,omitempty"`
-	Duration    time.Duration `json:"duration"`
-	ExitCode    int           `json:"exitCode"`
+	Skill       string              `json:"skill"`
+	Action      string              `json:"action"`
+	Description string              `json:"description,omitempty"`
+	Command     string              `json:"command,omitempty"`
+	ReadOnly    bool                `json:"readonly"`
+	Approval    bool                `json:"approval"`
+	Stdout      string              `json:"stdout,omitempty"`
+	Stderr      string              `json:"stderr,omitempty"`
+	Output      *SkillOutput        `json:"output,omitempty"`
+	Artifacts   []ArtifactCandidate `json:"artifacts,omitempty"`
+	Duration    time.Duration       `json:"duration"`
+	ExitCode    int                 `json:"exitCode"`
 }
 
 type manifest struct {
@@ -65,9 +66,6 @@ func NewRunner(cfg Config) *Runner {
 }
 
 func DefaultRootDir() string {
-	if root := os.Getenv("NETX_SKILLS_DIR"); root != "" {
-		return root
-	}
 	for _, candidate := range []string{
 		"skills",
 		filepath.Join("..", "..", "skills"),
@@ -112,6 +110,9 @@ func (r *Runner) RunWithEnv(ctx context.Context, skillName, actionName string, v
 	if action.Command == "" {
 		return result, fmt.Errorf("skill %q action %q command is required", skillName, actionName)
 	}
+	if !action.ReadOnly {
+		return result, fmt.Errorf("skill %q action %q is not marked readonly and cannot be executed by the read-only runner", skillName, actionName)
+	}
 	if action.Approval {
 		return result, fmt.Errorf("skill %q action %q requires approval and cannot be executed by the read-only runner", skillName, actionName)
 	}
@@ -151,6 +152,9 @@ func (r *Runner) RunWithEnv(ctx context.Context, skillName, actionName string, v
 	result.Duration = duration
 	result.ExitCode = exitCode(runErr)
 	result.Output = NormalizeSkillOutput(result.Stdout, result.Stderr, result.ExitCode, OutputMetadataFromResult(result, start))
+	if result.Output != nil {
+		result.Artifacts = result.Output.Artifacts
+	}
 
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return result, fmt.Errorf("skill %q action %q timed out after %s", skillName, actionName, timeout)

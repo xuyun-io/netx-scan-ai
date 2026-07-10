@@ -1,5 +1,14 @@
 version: "1"
 actions:
+  command_catalog:
+    description: Show curated read-only Chain287 SRE command suggestions for onboarding and common workflows.
+    readonly: true
+    approval: false
+    timeoutSeconds: 10
+    command: scripts/chain-rpc.sh
+    args:
+      - command_catalog
+
   block_height:
     description: Query the latest Chain287 block number.
     readonly: true
@@ -44,6 +53,73 @@ actions:
     command: scripts/chain-basic.sh
     args:
       - genesis_hash
+
+  rpc_snapshot:
+    description: Read a formatted RPC/node snapshot including chain ID, latest block age, peer count, gas price, sync status, genesis hash, chain mode, and active validator count.
+    readonly: true
+    approval: false
+    timeoutSeconds: 30
+    command: scripts/chain-rpc.sh
+    args:
+      - rpc_snapshot
+
+  sync_status:
+    description: Check whether the RPC node is syncing and report latest block age.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-rpc.sh
+    args:
+      - sync_status
+
+  chain_mode:
+    description: Detect whether Chain287 is in genesis mode or StakeHub/ValidatorSet mode, and list active validators.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-rpc.sh
+    args:
+      - chain_mode
+
+  address_balance:
+    description: Query native NETX balance and nonce for an EVM address.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-rpc.sh
+    args:
+      - address_balance
+      - ${address}
+
+  transaction_lookup:
+    description: Read a transaction by hash, including value, gas price, block number, and confirmations.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-rpc.sh
+    args:
+      - transaction_lookup
+      - ${tx_hash}
+
+  transaction_receipt:
+    description: Read a transaction receipt by hash, including status, gas used, fee, logs count, and confirmations.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-rpc.sh
+    args:
+      - transaction_receipt
+      - ${tx_hash}
+
+  block_lookup:
+    description: Read a block by number or tag (latest/earliest/pending), including miner, tx count, gas usage, and confirmations.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: scripts/chain-rpc.sh
+    args:
+      - block_lookup
+      - ${block}
 
   recent_blocks:
     description: Analyze the most recent N blocks (miner distribution, interval, gas, tx count). Default 10, max 200.

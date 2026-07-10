@@ -342,6 +342,13 @@ export function getTask(agentSpaceName: string, taskId: string) {
   });
 }
 
+export function deleteTask(agentSpaceName: string, taskId: string) {
+  return post<EntityResponse<{ taskId: string }>>('/deleteTask', {
+    agentSpaceName,
+    taskId,
+  });
+}
+
 export function respondToTask(agentSpaceName: string, taskId: string, response: 'approve' | 'reject') {
   return post<EntityResponse<Task>>('/respondToTask', {
     agentSpaceName,
@@ -461,14 +468,23 @@ export async function createDocument(agentSpaceName: string, file: File) {
   });
 }
 
+import { getAuthHeader } from './auth';
+
 const API_PREFIX = '/api/v1';
+
+function buildHeaders(): Record<string, string> {
+  const base: Record<string, string> = { 'Content-Type': 'application/json' };
+  const auth = getAuthHeader();
+  if (auth) {
+    base.Authorization = auth;
+  }
+  return base;
+}
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_PREFIX}${path}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: buildHeaders(),
     body: JSON.stringify(body),
   });
   const payload = await response.json().catch(() => ({}));

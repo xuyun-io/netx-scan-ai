@@ -23,6 +23,8 @@ const (
 	MaxMessageChars       = 1000
 	MaxDocumentBytes      = 10 * 1024 * 1024
 	MaxDocumentsTotalSize = 100 * 1024 * 1024
+
+	defaultConversationTitle = "新的会话"
 )
 
 var allowedDocumentExts = map[string]bool{
@@ -50,13 +52,16 @@ func (s *Store) CreateAgentSpace(_ context.Context, req model.AgentSpace) (model
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	name := strings.TrimSpace(req.Name)
+	if err := validateAgentSpaceName(name); err != nil {
+		return model.AgentSpace{}, err
+	}
+	if _, err := s.getAgentSpaceUnlocked(name); err == nil {
+		return model.AgentSpace{}, fmt.Errorf("name %q already exists", name)
+	}
+
 	now := time.Now().UTC()
-	if req.ID == "" {
-		req.ID = NewAgentSpaceID()
-	}
-	if req.Name == "" {
-		req.Name = "NetX Chain287 SRE"
-	}
+	req.Name = name
 	if req.LLM.Provider == "" {
 		req.LLM.Provider = "gemini"
 	}
@@ -65,10 +70,10 @@ func (s *Store) CreateAgentSpace(_ context.Context, req model.AgentSpace) (model
 	}
 	req.CreatedAt = now
 	req.UpdatedAt = now
-	if err := s.ensureAgentDirs(req.ID); err != nil {
+	if err := s.ensureAgentDirs(req.Name); err != nil {
 		return model.AgentSpace{}, err
 	}
-	if err := writeYAML(s.agentFile(req.ID), req); err != nil {
+	if err := writeYAML(s.agentFile(req.Name), req); err != nil {
 		return model.AgentSpace{}, err
 	}
 	return req, nil
@@ -98,9 +103,18 @@ func (s *Store) ListAgentSpaces(_ context.Context) ([]model.AgentSpace, error) {
 	return spaces, nil
 }
 
-func (s *Store) GetAgentSpace(_ context.Context, id string) (model.AgentSpace, error) {
+func (s *Store) GetAgentSpace(_ context.Context, name string) (model.AgentSpace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getAgentSpaceUnlocked(name)
+}
+
+func (s *Store) getAgentSpaceUnlocked(name string) (model.AgentSpace, error) {
+	if name == "" {
+		return model.AgentSpace{}, fmt.Errorf("name is required")
+	}
 	var space model.AgentSpace
-	err := readYAML(s.agentFile(id), &space)
+	err := readYAML(s.agentFile(name), &space)
 	return space, err
 }
 
@@ -108,12 +122,9 @@ func (s *Store) UpdateAgentSpace(_ context.Context, req model.AgentSpace) (model
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	space, err := s.GetAgentSpace(context.Background(), req.ID)
+	space, err := s.getAgentSpaceUnlocked(req.Name)
 	if err != nil {
 		return model.AgentSpace{}, err
-	}
-	if req.Name != "" {
-		space.Name = req.Name
 	}
 	if req.Description != "" {
 		space.Description = req.Description
@@ -131,48 +142,64 @@ func (s *Store) UpdateAgentSpace(_ context.Context, req model.AgentSpace) (model
 	space.Environment = req.Environment
 	space.Integrations = req.Integrations
 	space.UpdatedAt = time.Now().UTC()
-	if err := writeYAML(s.agentFile(space.ID), space); err != nil {
+	if err := writeYAML(s.agentFile(space.Name), space); err != nil {
 		return model.AgentSpace{}, err
 	}
 	return space, nil
 }
 
-func (s *Store) DeleteAgentSpace(_ context.Context, id string) error {
+func (s *Store) DeleteAgentSpace(_ context.Context, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return os.RemoveAll(s.agentDir(id))
+	return os.RemoveAll(s.agentDir(name))
 }
 
-func (s *Store) CreateConversation(_ context.Context, agentSpaceID, title string) (model.Conversation, error) {
+func validateAgentSpaceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("name must be at most 64 characters")
+	}
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return fmt.Errorf("name must be alphanumeric")
+		}
+	}
+	return nil
+}
+
+func (s *Store) CreateConversation(_ context.Context, agentSpaceName, title string) (model.Conversation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureAgentDirs(agentSpaceID); err != nil {
+	if err := s.ensureAgentDirs(agentSpaceName); err != nil {
 		return model.Conversation{}, err
 	}
 	now := time.Now().UTC()
+	title = strings.TrimSpace(title)
 	if title == "" {
-		title = "新的会话"
+		title = defaultConversationTitle
 	}
 	conv := model.Conversation{
-		ID:           agentSpaceIDScopedID(NewConversationID()),
-		AgentSpaceID: agentSpaceID,
-		Title:        title,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             agentSpaceNameScopedID(NewConversationID()),
+		AgentSpaceName: agentSpaceName,
+		Title:          title,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
-	dir := s.conversationDir(agentSpaceID, conv.ID)
+	dir := s.conversationDir(agentSpaceName, conv.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return model.Conversation{}, err
 	}
 	if err := writeYAML(filepath.Join(dir, "conversation.yaml"), conv); err != nil {
 		return model.Conversation{}, err
 	}
-	_ = appendJSONL(s.indexFile(agentSpaceID, "conversations.jsonl"), conv)
+	_ = appendJSONL(s.indexFile(agentSpaceName, "conversations.jsonl"), conv)
 	return conv, nil
 }
 
-func (s *Store) ListConversations(_ context.Context, agentSpaceID string) ([]model.Conversation, error) {
-	dir := filepath.Join(s.agentDir(agentSpaceID), "conversations")
+func (s *Store) ListConversations(_ context.Context, agentSpaceName string) ([]model.Conversation, error) {
+	dir := filepath.Join(s.agentDir(agentSpaceName), "conversations")
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return []model.Conversation{}, nil
@@ -185,7 +212,7 @@ func (s *Store) ListConversations(_ context.Context, agentSpaceID string) ([]mod
 		if !entry.IsDir() {
 			continue
 		}
-		conv, err := s.GetConversation(context.Background(), agentSpaceID, entry.Name())
+		conv, err := s.GetConversation(context.Background(), agentSpaceName, entry.Name())
 		if err == nil {
 			conversations = append(conversations, conv)
 		}
@@ -196,29 +223,40 @@ func (s *Store) ListConversations(_ context.Context, agentSpaceID string) ([]mod
 	return conversations, nil
 }
 
-func (s *Store) GetConversation(_ context.Context, agentSpaceID, id string) (model.Conversation, error) {
+func (s *Store) GetConversation(_ context.Context, agentSpaceName, id string) (model.Conversation, error) {
 	var conv model.Conversation
-	err := readYAML(filepath.Join(s.conversationDir(agentSpaceID, id), "conversation.yaml"), &conv)
+	err := readYAML(filepath.Join(s.conversationDir(agentSpaceName, id), "conversation.yaml"), &conv)
 	return conv, err
 }
 
-func (s *Store) DeleteConversation(_ context.Context, agentSpaceID, id string) error {
+func (s *Store) DeleteConversation(_ context.Context, agentSpaceName, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return os.RemoveAll(s.conversationDir(agentSpaceID, id))
+	return os.RemoveAll(s.conversationDir(agentSpaceName, id))
 }
 
 func (s *Store) AppendTurn(_ context.Context, turn model.Turn) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path := filepath.Join(s.conversationDir(turn.AgentSpaceID, turn.ConversationID), "turns.jsonl")
+	path := filepath.Join(s.conversationDir(turn.AgentSpaceName, turn.ConversationID), "turns.jsonl")
+	existingTurns, err := readJSONL[model.Turn](path)
+	if errors.Is(err, os.ErrNotExist) {
+		existingTurns = nil
+	} else if err != nil {
+		return err
+	}
 	if err := appendJSONL(path, turn); err != nil {
 		return err
 	}
-	conv, err := s.GetConversation(context.Background(), turn.AgentSpaceID, turn.ConversationID)
+	conversationPath := filepath.Join(s.conversationDir(turn.AgentSpaceName, turn.ConversationID), "conversation.yaml")
+	var conv model.Conversation
+	err = readYAML(conversationPath, &conv)
 	if err == nil {
 		conv.UpdatedAt = time.Now().UTC()
-		_ = writeYAML(filepath.Join(s.conversationDir(turn.AgentSpaceID, turn.ConversationID), "conversation.yaml"), conv)
+		if len(existingTurns) == 0 && isUntitledConversation(conv.Title) {
+			conv.Title = titleFromConversationPrompt(turn.Prompt)
+		}
+		_ = writeYAML(conversationPath, conv)
 	}
 	return nil
 }
@@ -226,7 +264,7 @@ func (s *Store) AppendTurn(_ context.Context, turn model.Turn) error {
 func (s *Store) UpdateTurn(_ context.Context, turn model.Turn) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path := filepath.Join(s.conversationDir(turn.AgentSpaceID, turn.ConversationID), "turns.jsonl")
+	path := filepath.Join(s.conversationDir(turn.AgentSpaceName, turn.ConversationID), "turns.jsonl")
 	turns, err := readJSONL[model.Turn](path)
 	if err != nil {
 		return err
@@ -245,8 +283,8 @@ func (s *Store) UpdateTurn(_ context.Context, turn model.Turn) error {
 	return writeJSONL(path, turns)
 }
 
-func (s *Store) GetTurn(_ context.Context, agentSpaceID, conversationID, turnID string) (model.Turn, error) {
-	turns, err := s.ListTurns(context.Background(), agentSpaceID, conversationID)
+func (s *Store) GetTurn(_ context.Context, agentSpaceName, conversationID, turnID string) (model.Turn, error) {
+	turns, err := s.ListTurns(context.Background(), agentSpaceName, conversationID)
 	if err != nil {
 		return model.Turn{}, err
 	}
@@ -258,8 +296,8 @@ func (s *Store) GetTurn(_ context.Context, agentSpaceID, conversationID, turnID 
 	return model.Turn{}, os.ErrNotExist
 }
 
-func (s *Store) ListTurns(_ context.Context, agentSpaceID, conversationID string) ([]model.Turn, error) {
-	path := filepath.Join(s.conversationDir(agentSpaceID, conversationID), "turns.jsonl")
+func (s *Store) ListTurns(_ context.Context, agentSpaceName, conversationID string) ([]model.Turn, error) {
+	path := filepath.Join(s.conversationDir(agentSpaceName, conversationID), "turns.jsonl")
 	turns, err := readJSONL[model.Turn](path)
 	if errors.Is(err, os.ErrNotExist) {
 		return []model.Turn{}, nil
@@ -291,14 +329,14 @@ func (s *Store) CreateTask(_ context.Context, task model.Task) (model.Task, erro
 	}
 	task.CreatedAt = now
 	task.UpdatedAt = now
-	dir := s.taskDir(task.AgentSpaceID, task.ID)
+	dir := s.taskDir(task.AgentSpaceName, task.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return model.Task{}, err
 	}
 	if err := writeYAML(filepath.Join(dir, "task.yaml"), task); err != nil {
 		return model.Task{}, err
 	}
-	_ = appendJSONL(s.indexFile(task.AgentSpaceID, "tasks.jsonl"), task)
+	_ = appendJSONL(s.indexFile(task.AgentSpaceName, "tasks.jsonl"), task)
 	return task, nil
 }
 
@@ -306,21 +344,21 @@ func (s *Store) UpdateTask(_ context.Context, task model.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	task.UpdatedAt = time.Now().UTC()
-	if err := writeYAML(filepath.Join(s.taskDir(task.AgentSpaceID, task.ID), "task.yaml"), task); err != nil {
+	if err := writeYAML(filepath.Join(s.taskDir(task.AgentSpaceName, task.ID), "task.yaml"), task); err != nil {
 		return err
 	}
-	_ = appendJSONL(s.indexFile(task.AgentSpaceID, "tasks.jsonl"), task)
+	_ = appendJSONL(s.indexFile(task.AgentSpaceName, "tasks.jsonl"), task)
 	return nil
 }
 
-func (s *Store) GetTask(_ context.Context, agentSpaceID, id string) (model.Task, error) {
+func (s *Store) GetTask(_ context.Context, agentSpaceName, id string) (model.Task, error) {
 	var task model.Task
-	err := readYAML(filepath.Join(s.taskDir(agentSpaceID, id), "task.yaml"), &task)
+	err := readYAML(filepath.Join(s.taskDir(agentSpaceName, id), "task.yaml"), &task)
 	return task, err
 }
 
-func (s *Store) ListTasks(_ context.Context, agentSpaceID string) ([]model.Task, error) {
-	dir := filepath.Join(s.agentDir(agentSpaceID), "tasks")
+func (s *Store) ListTasks(_ context.Context, agentSpaceName string) ([]model.Task, error) {
+	dir := filepath.Join(s.agentDir(agentSpaceName), "tasks")
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return []model.Task{}, nil
@@ -333,7 +371,7 @@ func (s *Store) ListTasks(_ context.Context, agentSpaceID string) ([]model.Task,
 		if !entry.IsDir() {
 			continue
 		}
-		task, err := s.GetTask(context.Background(), agentSpaceID, entry.Name())
+		task, err := s.GetTask(context.Background(), agentSpaceName, entry.Name())
 		if err == nil {
 			tasks = append(tasks, task)
 		}
@@ -344,10 +382,91 @@ func (s *Store) ListTasks(_ context.Context, agentSpaceID string) ([]model.Task,
 	return tasks, nil
 }
 
-func (s *Store) DeleteTask(_ context.Context, agentSpaceID, id string) error {
+func (s *Store) DeleteTask(_ context.Context, agentSpaceName, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return os.RemoveAll(s.taskDir(agentSpaceID, id))
+	return os.RemoveAll(s.taskDir(agentSpaceName, id))
+}
+
+func (s *Store) CreateAutomation(_ context.Context, automation model.Automation) (model.Automation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	if automation.ID == "" {
+		automation.ID = NewAutomationID()
+	}
+	if automation.Name == "" {
+		automation.Name = titleFromInstruction(automation.Instruction)
+	}
+	if automation.TriggerType == "" {
+		automation.TriggerType = model.AutomationTriggerSchedule
+	}
+	if automation.Status == "" {
+		if automation.Enabled {
+			automation.Status = model.AutomationStatusActive
+		} else {
+			automation.Status = model.AutomationStatusDisabled
+		}
+	}
+	automation.CreatedAt = now
+	automation.UpdatedAt = now
+	dir := s.automationDir(automation.AgentSpaceName, automation.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return model.Automation{}, err
+	}
+	if err := writeYAML(filepath.Join(dir, "automation.yaml"), automation); err != nil {
+		return model.Automation{}, err
+	}
+	_ = appendJSONL(s.indexFile(automation.AgentSpaceName, "automations.jsonl"), automation)
+	return automation, nil
+}
+
+func (s *Store) UpdateAutomation(_ context.Context, automation model.Automation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	automation.UpdatedAt = time.Now().UTC()
+	if err := writeYAML(filepath.Join(s.automationDir(automation.AgentSpaceName, automation.ID), "automation.yaml"), automation); err != nil {
+		return err
+	}
+	_ = appendJSONL(s.indexFile(automation.AgentSpaceName, "automations.jsonl"), automation)
+	return nil
+}
+
+func (s *Store) GetAutomation(_ context.Context, agentSpaceName, id string) (model.Automation, error) {
+	var automation model.Automation
+	err := readYAML(filepath.Join(s.automationDir(agentSpaceName, id), "automation.yaml"), &automation)
+	return automation, err
+}
+
+func (s *Store) DeleteAutomation(_ context.Context, agentSpaceName, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return os.RemoveAll(s.automationDir(agentSpaceName, id))
+}
+
+func (s *Store) ListAutomations(_ context.Context, agentSpaceName string) ([]model.Automation, error) {
+	dir := filepath.Join(s.agentDir(agentSpaceName), "automations")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []model.Automation{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	automations := []model.Automation{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		automation, err := s.GetAutomation(context.Background(), agentSpaceName, entry.Name())
+		if err == nil {
+			automations = append(automations, automation)
+		}
+	}
+	sort.Slice(automations, func(i, j int) bool {
+		return automations[i].UpdatedAt.After(automations[j].UpdatedAt)
+	})
+	return automations, nil
 }
 
 func (s *Store) AppendTaskRecord(_ context.Context, record model.Record) error {
@@ -359,7 +478,7 @@ func (s *Store) AppendTaskRecord(_ context.Context, record model.Record) error {
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
 	}
-	return appendJSONL(filepath.Join(s.taskDir(record.AgentSpaceID, record.TaskID), "records.jsonl"), record)
+	return appendJSONL(filepath.Join(s.taskDir(record.AgentSpaceName, record.TaskID), "records.jsonl"), record)
 }
 
 func (s *Store) AppendConversationRecord(_ context.Context, record model.Record) error {
@@ -371,15 +490,15 @@ func (s *Store) AppendConversationRecord(_ context.Context, record model.Record)
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
 	}
-	return appendJSONL(filepath.Join(s.conversationDir(record.AgentSpaceID, record.ConversationID), "records.jsonl"), record)
+	return appendJSONL(filepath.Join(s.conversationDir(record.AgentSpaceName, record.ConversationID), "records.jsonl"), record)
 }
 
-func (s *Store) ListRecords(_ context.Context, agentSpaceID, taskID, conversationID, turnID string) ([]model.Record, error) {
+func (s *Store) ListRecords(_ context.Context, agentSpaceName, taskID, conversationID, turnID string) ([]model.Record, error) {
 	var path string
 	if taskID != "" {
-		path = filepath.Join(s.taskDir(agentSpaceID, taskID), "records.jsonl")
+		path = filepath.Join(s.taskDir(agentSpaceName, taskID), "records.jsonl")
 	} else if conversationID != "" {
-		path = filepath.Join(s.conversationDir(agentSpaceID, conversationID), "records.jsonl")
+		path = filepath.Join(s.conversationDir(agentSpaceName, conversationID), "records.jsonl")
 	} else {
 		return []model.Record{}, nil
 	}
@@ -415,9 +534,12 @@ func (s *Store) CreateArtifact(_ context.Context, artifact model.Artifact, conte
 	if artifact.Type == "" {
 		artifact.Type = artifactType(artifact.Name)
 	}
+	if artifact.Version <= 0 {
+		artifact.Version = 1
+	}
 	filename := fmt.Sprintf("%s-%s", artifact.ID, SafeName(artifact.Name))
 	relPath := filepath.Join("artifacts", filename)
-	fullPath := filepath.Join(s.agentDir(artifact.AgentSpaceID), relPath)
+	fullPath := filepath.Join(s.agentDir(artifact.AgentSpaceName), relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return model.Artifact{}, err
 	}
@@ -427,14 +549,14 @@ func (s *Store) CreateArtifact(_ context.Context, artifact model.Artifact, conte
 	artifact.Path = relPath
 	artifact.Size = int64(len(content))
 	artifact.CreatedAt = now
-	if err := appendJSONL(s.indexFile(artifact.AgentSpaceID, "artifacts.jsonl"), artifact); err != nil {
+	if err := appendJSONL(s.indexFile(artifact.AgentSpaceName, "artifacts.jsonl"), artifact); err != nil {
 		return model.Artifact{}, err
 	}
 	return artifact, nil
 }
 
-func (s *Store) ListArtifacts(_ context.Context, agentSpaceID string) ([]model.Artifact, error) {
-	artifacts, err := readJSONL[model.Artifact](s.indexFile(agentSpaceID, "artifacts.jsonl"))
+func (s *Store) ListArtifacts(_ context.Context, agentSpaceName string) ([]model.Artifact, error) {
+	artifacts, err := readJSONL[model.Artifact](s.indexFile(agentSpaceName, "artifacts.jsonl"))
 	if errors.Is(err, os.ErrNotExist) {
 		return []model.Artifact{}, nil
 	}
@@ -447,21 +569,49 @@ func (s *Store) ListArtifacts(_ context.Context, agentSpaceID string) ([]model.A
 	return artifacts, nil
 }
 
-func (s *Store) GetArtifact(_ context.Context, agentSpaceID, id string) (model.Artifact, []byte, error) {
-	artifacts, err := s.ListArtifacts(context.Background(), agentSpaceID)
+func (s *Store) GetArtifact(_ context.Context, agentSpaceName, id string) (model.Artifact, []byte, error) {
+	artifacts, err := s.ListArtifacts(context.Background(), agentSpaceName)
 	if err != nil {
 		return model.Artifact{}, nil, err
 	}
 	for _, artifact := range artifacts {
 		if artifact.ID == id {
-			content, err := os.ReadFile(filepath.Join(s.agentDir(agentSpaceID), artifact.Path))
+			content, err := os.ReadFile(filepath.Join(s.agentDir(agentSpaceName), artifact.Path))
 			return artifact, content, err
 		}
 	}
 	return model.Artifact{}, nil, os.ErrNotExist
 }
 
-func (s *Store) CreateDocument(_ context.Context, agentSpaceID, name, contentType, contentBase64 string) (model.Document, error) {
+func (s *Store) DeleteArtifact(_ context.Context, agentSpaceName, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	artifacts, err := s.ListArtifacts(context.Background(), agentSpaceName)
+	if err != nil {
+		return err
+	}
+	var target model.Artifact
+	filtered := artifacts[:0]
+	for _, a := range artifacts {
+		if a.ID == id {
+			target = a
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	if target.ID == "" {
+		return os.ErrNotExist
+	}
+	if target.Path != "" {
+		if err := os.Remove(filepath.Join(s.agentDir(agentSpaceName), target.Path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return writeJSONL(s.indexFile(agentSpaceName, "artifacts.jsonl"), filtered)
+}
+
+func (s *Store) CreateDocument(_ context.Context, agentSpaceName, name, contentType, contentBase64 string) (model.Document, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ext := strings.ToLower(filepath.Ext(name))
@@ -475,7 +625,7 @@ func (s *Store) CreateDocument(_ context.Context, agentSpaceID, name, contentTyp
 	if len(content) > MaxDocumentBytes {
 		return model.Document{}, fmt.Errorf("document exceeds %d bytes", MaxDocumentBytes)
 	}
-	total, err := s.activeDocumentSizeLocked(agentSpaceID)
+	total, err := s.activeDocumentSizeLocked(agentSpaceName)
 	if err != nil {
 		return model.Document{}, err
 	}
@@ -484,17 +634,17 @@ func (s *Store) CreateDocument(_ context.Context, agentSpaceID, name, contentTyp
 	}
 	now := time.Now().UTC()
 	doc := model.Document{
-		ID:           agentSpaceIDScopedID(NewDocumentID()),
-		AgentSpaceID: agentSpaceID,
-		Name:         SafeName(name),
-		ContentType:  contentType,
-		Size:         int64(len(content)),
-		Status:       model.StatusActive,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             agentSpaceNameScopedID(NewDocumentID()),
+		AgentSpaceName: agentSpaceName,
+		Name:           SafeName(name),
+		ContentType:    contentType,
+		Size:           int64(len(content)),
+		Status:         model.StatusActive,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	fileRel := filepath.Join("documents", fmt.Sprintf("%s-%s", doc.ID, doc.Name))
-	filePath := filepath.Join(s.agentDir(agentSpaceID), fileRel)
+	filePath := filepath.Join(s.agentDir(agentSpaceName), fileRel)
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 		return model.Document{}, err
 	}
@@ -502,18 +652,18 @@ func (s *Store) CreateDocument(_ context.Context, agentSpaceID, name, contentTyp
 		return model.Document{}, err
 	}
 	doc.Path = fileRel
-	if err := os.MkdirAll(filepath.Join(s.agentDir(agentSpaceID), "documents", ".meta"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(s.agentDir(agentSpaceName), "documents", ".meta"), 0o755); err != nil {
 		return model.Document{}, err
 	}
-	if err := writeYAML(s.documentMetaFile(agentSpaceID, doc.ID), doc); err != nil {
+	if err := writeYAML(s.documentMetaFile(agentSpaceName, doc.ID), doc); err != nil {
 		return model.Document{}, err
 	}
-	_ = appendJSONL(s.indexFile(agentSpaceID, "documents.jsonl"), doc)
+	_ = appendJSONL(s.indexFile(agentSpaceName, "documents.jsonl"), doc)
 	return doc, nil
 }
 
-func (s *Store) ListDocuments(_ context.Context, agentSpaceID string, includeInactive bool) ([]model.Document, error) {
-	metaDir := filepath.Join(s.agentDir(agentSpaceID), "documents", ".meta")
+func (s *Store) ListDocuments(_ context.Context, agentSpaceName string, includeInactive bool) ([]model.Document, error) {
+	metaDir := filepath.Join(s.agentDir(agentSpaceName), "documents", ".meta")
 	entries, err := os.ReadDir(metaDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return []model.Document{}, nil
@@ -540,16 +690,16 @@ func (s *Store) ListDocuments(_ context.Context, agentSpaceID string, includeIna
 	return docs, nil
 }
 
-func (s *Store) GetDocument(_ context.Context, agentSpaceID, id string) (model.Document, error) {
+func (s *Store) GetDocument(_ context.Context, agentSpaceName, id string) (model.Document, error) {
 	var doc model.Document
-	err := readYAML(s.documentMetaFile(agentSpaceID, id), &doc)
+	err := readYAML(s.documentMetaFile(agentSpaceName, id), &doc)
 	return doc, err
 }
 
-func (s *Store) DeleteDocument(_ context.Context, agentSpaceID, id string) (model.Document, error) {
+func (s *Store) DeleteDocument(_ context.Context, agentSpaceName, id string) (model.Document, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	doc, err := s.GetDocument(context.Background(), agentSpaceID, id)
+	doc, err := s.GetDocument(context.Background(), agentSpaceName, id)
 	if err != nil {
 		return model.Document{}, err
 	}
@@ -557,32 +707,33 @@ func (s *Store) DeleteDocument(_ context.Context, agentSpaceID, id string) (mode
 	doc.Status = model.StatusInactive
 	doc.UpdatedAt = now
 	doc.DeletedAt = &now
-	if err := writeYAML(s.documentMetaFile(agentSpaceID, id), doc); err != nil {
+	if err := writeYAML(s.documentMetaFile(agentSpaceName, id), doc); err != nil {
 		return model.Document{}, err
 	}
-	_ = appendJSONL(s.indexFile(agentSpaceID, "documents.jsonl"), doc)
+	_ = appendJSONL(s.indexFile(agentSpaceName, "documents.jsonl"), doc)
 	return doc, nil
 }
 
-func (s *Store) ensureAgentDirs(agentSpaceID string) error {
+func (s *Store) ensureAgentDirs(agentSpaceName string) error {
 	for _, dir := range []string{
-		s.agentDir(agentSpaceID),
-		filepath.Join(s.agentDir(agentSpaceID), "conversations"),
-		filepath.Join(s.agentDir(agentSpaceID), "tasks"),
-		filepath.Join(s.agentDir(agentSpaceID), "documents"),
-		filepath.Join(s.agentDir(agentSpaceID), "documents", ".meta"),
-		filepath.Join(s.agentDir(agentSpaceID), "artifacts"),
-		filepath.Join(s.agentDir(agentSpaceID), "memory"),
-		filepath.Join(s.agentDir(agentSpaceID), "credentials"),
-		filepath.Join(s.agentDir(agentSpaceID), "index"),
-		filepath.Join(s.agentDir(agentSpaceID), "logs"),
-		filepath.Join(s.agentDir(agentSpaceID), "tmp"),
+		s.agentDir(agentSpaceName),
+		filepath.Join(s.agentDir(agentSpaceName), "conversations"),
+		filepath.Join(s.agentDir(agentSpaceName), "tasks"),
+		filepath.Join(s.agentDir(agentSpaceName), "automations"),
+		filepath.Join(s.agentDir(agentSpaceName), "documents"),
+		filepath.Join(s.agentDir(agentSpaceName), "documents", ".meta"),
+		filepath.Join(s.agentDir(agentSpaceName), "artifacts"),
+		filepath.Join(s.agentDir(agentSpaceName), "memory"),
+		filepath.Join(s.agentDir(agentSpaceName), "credentials"),
+		filepath.Join(s.agentDir(agentSpaceName), "index"),
+		filepath.Join(s.agentDir(agentSpaceName), "logs"),
+		filepath.Join(s.agentDir(agentSpaceName), "tmp"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	memories := filepath.Join(s.agentDir(agentSpaceID), "memory", "memories.jsonl")
+	memories := filepath.Join(s.agentDir(agentSpaceName), "memory", "memories.jsonl")
 	if _, err := os.Stat(memories); errors.Is(err, os.ErrNotExist) {
 		if err := os.WriteFile(memories, nil, 0o644); err != nil {
 			return err
@@ -591,8 +742,8 @@ func (s *Store) ensureAgentDirs(agentSpaceID string) error {
 	return nil
 }
 
-func (s *Store) activeDocumentSizeLocked(agentSpaceID string) (int64, error) {
-	docs, err := s.ListDocuments(context.Background(), agentSpaceID, false)
+func (s *Store) activeDocumentSizeLocked(agentSpaceName string) (int64, error) {
+	docs, err := s.ListDocuments(context.Background(), agentSpaceName, false)
 	if err != nil {
 		return 0, err
 	}
@@ -603,28 +754,32 @@ func (s *Store) activeDocumentSizeLocked(agentSpaceID string) (int64, error) {
 	return total, nil
 }
 
-func (s *Store) agentDir(agentSpaceID string) string {
-	return filepath.Join(s.root, agentSpaceID)
+func (s *Store) agentDir(agentSpaceName string) string {
+	return filepath.Join(s.root, agentSpaceName)
 }
 
-func (s *Store) agentFile(agentSpaceID string) string {
-	return filepath.Join(s.agentDir(agentSpaceID), "agent.yaml")
+func (s *Store) agentFile(agentSpaceName string) string {
+	return filepath.Join(s.agentDir(agentSpaceName), "agent.yaml")
 }
 
-func (s *Store) conversationDir(agentSpaceID, conversationID string) string {
-	return filepath.Join(s.agentDir(agentSpaceID), "conversations", conversationID)
+func (s *Store) conversationDir(agentSpaceName, conversationID string) string {
+	return filepath.Join(s.agentDir(agentSpaceName), "conversations", conversationID)
 }
 
-func (s *Store) taskDir(agentSpaceID, taskID string) string {
-	return filepath.Join(s.agentDir(agentSpaceID), "tasks", taskID)
+func (s *Store) taskDir(agentSpaceName, taskID string) string {
+	return filepath.Join(s.agentDir(agentSpaceName), "tasks", taskID)
 }
 
-func (s *Store) documentMetaFile(agentSpaceID, documentID string) string {
-	return filepath.Join(s.agentDir(agentSpaceID), "documents", ".meta", documentID+".yaml")
+func (s *Store) automationDir(agentSpaceName, automationID string) string {
+	return filepath.Join(s.agentDir(agentSpaceName), "automations", automationID)
 }
 
-func (s *Store) indexFile(agentSpaceID, name string) string {
-	return filepath.Join(s.agentDir(agentSpaceID), "index", name)
+func (s *Store) documentMetaFile(agentSpaceName, documentID string) string {
+	return filepath.Join(s.agentDir(agentSpaceName), "documents", ".meta", documentID+".yaml")
+}
+
+func (s *Store) indexFile(agentSpaceName, name string) string {
+	return filepath.Join(s.agentDir(agentSpaceName), "index", name)
 }
 
 func writeYAML(path string, value any) error {
@@ -725,6 +880,23 @@ func titleFromInstruction(instruction string) string {
 	return instruction
 }
 
+func isUntitledConversation(title string) bool {
+	title = strings.TrimSpace(title)
+	return title == "" || title == defaultConversationTitle
+}
+
+func titleFromConversationPrompt(prompt string) string {
+	prompt = strings.Join(strings.Fields(prompt), " ")
+	if prompt == "" {
+		return defaultConversationTitle
+	}
+	runes := []rune(prompt)
+	if len(runes) > 34 {
+		return string(runes[:34]) + "..."
+	}
+	return prompt
+}
+
 func artifactType(name string) string {
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".md":
@@ -740,6 +912,6 @@ func artifactType(name string) string {
 	}
 }
 
-func agentSpaceIDScopedID(id string) string {
+func agentSpaceNameScopedID(id string) string {
 	return id
 }

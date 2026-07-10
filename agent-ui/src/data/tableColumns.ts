@@ -1,0 +1,2 @@
+export const RESOURCE_TIME_COLUMN_WIDTH = '300px';
+export const TASK_AUTOMATION_COLUMN_WIDTH = '420px';

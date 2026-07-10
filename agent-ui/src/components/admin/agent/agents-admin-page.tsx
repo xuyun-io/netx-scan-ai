@@ -1,17 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  AlertCircle,
   ArrowLeft,
   ArrowRight,
+  BellRing,
   Bot,
   Check,
   ChevronsUpDown,
   ExternalLink,
   KeyRound,
   LayoutGrid,
+  Link2,
+  LogOut,
+  MessageSquare,
   Pencil,
+  Plug2,
   Plus,
   RefreshCw,
   Search,
+  Settings,
   ShieldCheck,
   Trash2,
   Workflow,
@@ -53,9 +60,11 @@ interface AgentsAdminPageProps {
   onOpenAgent: (agentSpace: AgentSpace) => void | Promise<void>;
   onUpdateAgent: (agentSpace: AgentSpace) => Promise<void>;
   onRefresh: () => Promise<void>;
+  onLogout?: () => void;
 }
 
 const wizardSteps = ['基础信息', '环境变量', '资源访问', 'Web 访问', '企业微信', '确认创建'] as const;
+const wecomSetupSteps = ['Getting started', 'Configure webhook', 'Complete'] as const;
 
 const defaultWizardState = {
   name: '',
@@ -89,6 +98,7 @@ export function AgentsAdminPage({
   onOpenAgent,
   onUpdateAgent,
   onRefresh,
+  onLogout,
 }: AgentsAdminPageProps) {
   const [view, setView] = useState<AdminView>('list');
   const [selectedAgent, setSelectedAgent] = useState<AgentSpace | null>(null);
@@ -143,6 +153,7 @@ export function AgentsAdminPage({
           onDelete={handleDelete}
           onOpen={onOpenAgent}
           onUpdate={onUpdateAgent}
+          onLogout={onLogout}
         />
       ) : (
         <AgentListView
@@ -153,6 +164,7 @@ export function AgentsAdminPage({
           onOpen={onOpenAgent}
           onRefresh={onRefresh}
           onSelect={handleSelectAgent}
+          onLogout={onLogout}
         />
       )}
 
@@ -177,9 +189,10 @@ interface AgentListViewProps {
   onOpen: (agentSpace: AgentSpace) => void;
   onRefresh: () => Promise<void>;
   onSelect: (agentSpace: AgentSpace) => void;
+  onLogout?: () => void;
 }
 
-function AgentListView({ agentSpaces, booting, busy, onCreate, onOpen, onRefresh, onSelect }: AgentListViewProps) {
+function AgentListView({ agentSpaces, booting, busy, onCreate, onOpen, onRefresh, onSelect, onLogout }: AgentListViewProps) {
   const [activeTab, setActiveTab] = useState('all');
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('updatedAt');
@@ -248,6 +261,17 @@ function AgentListView({ agentSpaces, booting, busy, onCreate, onOpen, onRefresh
               <Plus className="mr-1.5 h-3.5 w-3.5" />
               创建 Agent
             </Button>
+            {onLogout && (
+              <Button
+                className="h-8 rounded-md border border-[#d1d5db] bg-white px-3 text-xs font-medium text-[#374151] hover:bg-[#f9fafb] hover:text-red-600"
+                variant="outline"
+                onClick={onLogout}
+                title="退出登录"
+              >
+                <LogOut className="mr-1.5 h-3.5 w-3.5" />
+                退出
+              </Button>
+            )}
           </div>
         </div>
       </header>
@@ -337,7 +361,7 @@ function AgentListView({ agentSpaces, booting, busy, onCreate, onOpen, onRefresh
                     <th className="px-4 py-3 font-medium">智能体</th>
                     <th className="w-[120px] px-4 py-3 font-medium">状态</th>
                     <th className="w-[180px] px-4 py-3 font-medium">运行时</th>
-                    <th className="w-[180px] px-4 py-3 font-medium">最近活跃</th>
+                    <th className="w-[270px] px-4 py-3 font-medium">最近活跃</th>
                     <th className="w-[100px] px-4 py-3 font-medium">运行次数</th>
                     <th className="w-[80px] px-4 py-3 font-medium text-right">操作</th>
                   </tr>
@@ -415,13 +439,16 @@ interface AgentDetailViewProps {
   onDelete: (agentSpace: AgentSpace) => Promise<void>;
   onOpen: (agentSpace: AgentSpace) => void;
   onUpdate: (agentSpace: AgentSpace) => Promise<void>;
+  onLogout?: () => void;
 }
 
-function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate }: AgentDetailViewProps) {
+function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate, onLogout }: AgentDetailViewProps) {
   const [activeTab, setActiveTab] = useState('overview');
   const [editingEnv, setEditingEnv] = useState(false);
   const [envRows, setEnvRows] = useState<EnvVarDraft[]>([]);
   const [envError, setEnvError] = useState<string | null>(null);
+  const [wecomSetupOpen, setWecomSetupOpen] = useState(false);
+  const [integrationError, setIntegrationError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!editingEnv) {
@@ -466,8 +493,34 @@ function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate 
     setEnvError(null);
   };
 
+  const handleSaveWeCom = async (input: { enabled: boolean; webhookUrl?: string }) => {
+    const currentWebhook = agentSpace.integrations?.wecom?.webhookUrl;
+    const nextWebhook = input.webhookUrl?.trim() || currentWebhook;
+    if (input.enabled && !nextWebhook) {
+      setIntegrationError('请输入企业微信群机器人 webhook。');
+      return;
+    }
+    try {
+      await onUpdate({
+        ...agentSpace,
+        integrations: {
+          ...agentSpace.integrations,
+          wecom: {
+            enabled: input.enabled,
+            webhookUrl: input.enabled ? nextWebhook : undefined,
+          },
+        },
+      });
+      setIntegrationError(null);
+      setWecomSetupOpen(false);
+    } catch (err) {
+      setIntegrationError((err as Error).message);
+    }
+  };
+
   const initials = agentSpace.name.slice(0, 2).toUpperCase();
   const wecomEnabled = Boolean(agentSpace.integrations?.wecom?.enabled);
+  const wecomWebhook = agentSpace.integrations?.wecom?.webhookUrl;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -486,6 +539,19 @@ function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate 
             <span className="h-1.5 w-1.5 rounded-full bg-[#10b981]" />
             在线
           </span>
+          <div className="ml-auto flex items-center gap-2">
+            {onLogout && (
+              <Button
+                className="h-8 rounded-md border border-[#d1d5db] bg-white px-3 text-xs font-medium text-[#374151] hover:bg-[#f9fafb] hover:text-red-600"
+                variant="outline"
+                onClick={onLogout}
+                title="退出登录"
+              >
+                <LogOut className="mr-1.5 h-3.5 w-3.5" />
+                退出
+              </Button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -707,25 +773,122 @@ function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate 
                 <EmptyState icon={ExternalLink} title="暂无 MCP" description="MCP 配置将显示在这里。" />
               </TabsContent>
               <TabsContent value="integrations" className="mt-0">
-                <h2 className="text-sm font-semibold text-[#111827]">集成</h2>
-                <div className="mt-4 rounded-md border border-[#e2e8f0] bg-white p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-semibold text-[#111827]">企业微信</div>
-                      <div className="mt-0.5 text-xs text-[#64748b]">第一版第三方集成仅支持群机器人 webhook。</div>
-                    </div>
-                    <span
-                      className={cn(
-                        'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold',
-                        wecomEnabled ? 'bg-[#d1fae5] text-[#047857]' : 'bg-[#f3f4f6] text-[#6b7280]',
-                      )}
-                    >
-                      {wecomEnabled ? '已启用' : '未配置'}
-                    </span>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold text-[#111827]">外部集成</h2>
+                    <p className="mt-1 text-xs leading-5 text-[#64748b]">
+                      为当前 AgentSpace 连接通知渠道。企业微信启用后，Agent 系统工具和自动化结果推送会使用这里的配置。
+                    </p>
                   </div>
-                  {wecomEnabled && (
-                    <div className="mt-3 break-all font-mono text-xs text-[#64748b]">
-                      {maskWebhook(agentSpace.integrations?.wecom?.webhookUrl)}
+                  <Button
+                    className="h-8 rounded-md bg-[#0f766e] px-3 text-xs text-white hover:bg-[#115e59]"
+                    disabled={busy}
+                    onClick={() => setWecomSetupOpen(true)}
+                  >
+                    <Plug2 className="mr-1.5 h-3.5 w-3.5" />
+                    {wecomEnabled ? '编辑集成' : '添加集成'}
+                  </Button>
+                </div>
+
+                {integrationError && (
+                  <div className="mt-4 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {integrationError}
+                  </div>
+                )}
+
+                <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  <IntegrationCard
+                    description="将任务结果、自动化执行状态和审批提醒发送到企业微信群。"
+                    enabled={wecomEnabled}
+                    iconLabel="企微"
+                    title="企业微信"
+                    onConfigure={() => setWecomSetupOpen(true)}
+                  />
+                  <IntegrationCard
+                    description="后续可接入审批应用、工单系统或更多企业通知渠道。"
+                    enabled={false}
+                    iconLabel="+"
+                    title="更多集成"
+                    disabled
+                    onConfigure={() => undefined}
+                  />
+                </div>
+
+                <div className="mt-5 overflow-hidden rounded-md border border-[#e2e8f0] bg-white">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#e2e8f0] px-4 py-3">
+                    <div>
+                      <div className="text-sm font-semibold text-[#111827]">Connections ({wecomEnabled ? 1 : 0})</div>
+                      <div className="mt-0.5 text-xs text-[#64748b]">当前 AgentSpace 可用的外部连接。</div>
+                    </div>
+                    <Button
+                      className="h-8 rounded-md border-[#0f766e] bg-white px-3 text-xs text-[#0f766e] hover:bg-[#ecfdf5]"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => setWecomSetupOpen(true)}
+                    >
+                      <Plus className="mr-1.5 h-3.5 w-3.5" />
+                      添加连接
+                    </Button>
+                  </div>
+                  {wecomEnabled ? (
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[720px] text-left text-sm">
+                        <thead className="border-b border-[#e2e8f0] bg-[#f8fafc] text-xs font-semibold uppercase tracking-wide text-[#64748b]">
+                          <tr>
+                            <th className="px-4 py-2.5">Connection name</th>
+                            <th className="px-4 py-2.5">Type</th>
+                            <th className="px-4 py-2.5">Configuration</th>
+                            <th className="px-4 py-2.5">Status</th>
+                            <th className="px-4 py-2.5 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr className="border-b border-[#eef2f7] last:border-b-0">
+                            <td className="px-4 py-3 font-medium text-[#111827]">企业微信通知</td>
+                            <td className="px-4 py-3 text-[#475569]">Group robot webhook</td>
+                            <td className="max-w-[280px] break-all px-4 py-3 font-mono text-xs text-[#64748b]">
+                              {maskWebhook(wecomWebhook)}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#ecfdf5] px-2.5 py-1 text-xs font-semibold text-[#047857]">
+                                <span className="h-1.5 w-1.5 rounded-full bg-[#10b981]" />
+                                Enabled
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <Button
+                                className="h-8 rounded-md border-[#d1d5db] bg-white px-3 text-xs text-[#374151] hover:bg-[#f8fafc]"
+                                variant="outline"
+                                disabled={busy}
+                                onClick={() => setWecomSetupOpen(true)}
+                              >
+                                <Settings className="mr-1.5 h-3.5 w-3.5" />
+                                配置
+                              </Button>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="flex min-h-[180px] flex-col items-center justify-center px-6 py-8 text-center">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f8fafc] text-[#94a3b8]">
+                        <Link2 className="h-5 w-5" />
+                      </div>
+                      <div className="mt-3 text-sm font-semibold text-[#374151]">No connections</div>
+                      <p className="mt-1 max-w-lg text-xs leading-5 text-[#64748b]">
+                        添加企业微信连接后，定时任务完成、失败或等待审批时会向配置的群机器人发送通知。
+                      </p>
+                      <Button
+                        className="mt-4 h-8 rounded-md border-[#0f766e] bg-white px-3 text-xs text-[#0f766e] hover:bg-[#ecfdf5]"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => setWecomSetupOpen(true)}
+                      >
+                        <Plus className="mr-1.5 h-3.5 w-3.5" />
+                        添加连接
+                      </Button>
                     </div>
                   )}
                 </div>
@@ -734,6 +897,18 @@ function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate 
           </Tabs>
         </section>
       </main>
+      <WeComIntegrationDialog
+        agentSpace={agentSpace}
+        busy={busy}
+        open={wecomSetupOpen}
+        onOpenChange={(open) => {
+          setWecomSetupOpen(open);
+          if (!open) {
+            setIntegrationError(null);
+          }
+        }}
+        onSave={handleSaveWeCom}
+      />
     </div>
   );
 }
@@ -771,6 +946,377 @@ function EmptyState({
       <div className="mt-3 text-sm font-semibold text-[#374151]">{title}</div>
       <p className="mt-1 max-w-xs text-xs text-[#64748b]">{description}</p>
     </div>
+  );
+}
+
+function IntegrationCard({
+  description,
+  disabled,
+  enabled,
+  iconLabel,
+  onConfigure,
+  title,
+}: {
+  description: string;
+  disabled?: boolean;
+  enabled: boolean;
+  iconLabel: string;
+  onConfigure: () => void;
+  title: string;
+}) {
+  return (
+    <div
+      className={cn(
+        'rounded-md border bg-white p-5 transition',
+        enabled ? 'border-[#99f6e4] bg-[#f0fdfa]' : 'border-[#e2e8f0]',
+        disabled ? 'opacity-70' : 'hover:border-[#99f6e4]',
+      )}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div
+            className={cn(
+              'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-sm font-bold',
+              enabled ? 'bg-[#0f766e] text-white' : 'bg-[#eef2f7] text-[#475569]',
+            )}
+          >
+            {iconLabel}
+          </div>
+          <div>
+            <div className="text-sm font-semibold text-[#111827]">{title}</div>
+            <p className="mt-1 max-w-md text-xs leading-5 text-[#64748b]">{description}</p>
+          </div>
+        </div>
+        <span
+          className={cn(
+            'inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs font-semibold',
+            enabled ? 'bg-[#d1fae5] text-[#047857]' : 'bg-[#f3f4f6] text-[#6b7280]',
+          )}
+        >
+          {enabled ? '已连接' : disabled ? '未开放' : '未配置'}
+        </span>
+      </div>
+      <Button
+        className={cn(
+          'mt-5 h-8 rounded-md px-3 text-xs',
+          enabled
+            ? 'border-[#0f766e] bg-white text-[#0f766e] hover:bg-[#ecfdf5]'
+            : 'bg-[#0f766e] text-white hover:bg-[#115e59]',
+        )}
+        variant={enabled ? 'outline' : 'default'}
+        disabled={disabled}
+        onClick={onConfigure}
+      >
+        {enabled ? <Settings className="mr-1.5 h-3.5 w-3.5" /> : <Plus className="mr-1.5 h-3.5 w-3.5" />}
+        {enabled ? '管理连接' : '添加集成'}
+      </Button>
+    </div>
+  );
+}
+
+function WeComIntegrationDialog({
+  agentSpace,
+  busy,
+  onOpenChange,
+  onSave,
+  open,
+}: {
+  agentSpace: AgentSpace;
+  busy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: (input: { enabled: boolean; webhookUrl?: string }) => Promise<void>;
+  open: boolean;
+}) {
+  const existingEnabled = Boolean(agentSpace.integrations?.wecom?.enabled);
+  const existingWebhook = agentSpace.integrations?.wecom?.webhookUrl;
+  const [step, setStep] = useState(0);
+  const [enabled, setEnabled] = useState(existingEnabled);
+  const [webhookUrl, setWebhookUrl] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setStep(0);
+      setError(null);
+      setWebhookUrl('');
+      return;
+    }
+    setEnabled(existingEnabled);
+    setWebhookUrl('');
+    setError(null);
+  }, [existingEnabled, open]);
+
+  const hasExistingWebhook = Boolean(existingWebhook);
+  const hasUsableWebhook = !enabled || webhookUrl.trim().length > 0 || hasExistingWebhook;
+  const canContinue = step === 1 ? hasUsableWebhook : true;
+
+  const handleNext = () => {
+    if (step === 1 && !hasUsableWebhook) {
+      setError('请输入企业微信群机器人 webhook，或先关闭启用开关。');
+      return;
+    }
+    setError(null);
+    setStep((current) => Math.min(wecomSetupSteps.length - 1, current + 1));
+  };
+
+  const handleSave = async () => {
+    if (enabled && !hasUsableWebhook) {
+      setError('请输入企业微信群机器人 webhook。');
+      return;
+    }
+    setError(null);
+    await onSave({
+      enabled,
+      webhookUrl: webhookUrl.trim() || undefined,
+    });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[92vh] w-[min(1080px,calc(100vw-32px))] overflow-hidden rounded-md border-[#cbd5e1] bg-white p-0 text-[#111827] shadow-2xl">
+        <DialogHeader className="border-b border-[#d8dee6] px-6 pb-4 pt-5">
+          <DialogTitle className="text-lg font-semibold text-[#111827]">企业微信集成设置</DialogTitle>
+          <DialogDescription className="text-sm text-[#64748b]">
+            允许 Agent 向企业微信群推送任务、自动化和审批提醒。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid min-h-[460px] grid-cols-[230px_minmax(0,1fr)] overflow-hidden max-lg:grid-cols-1">
+          <aside className="border-r border-[#d8dee6] bg-[#f8fafc] px-5 py-6 max-lg:hidden">
+            <div className="space-y-1">
+              {wecomSetupSteps.map((label, index) => (
+                <div key={label} className="relative flex gap-3 pb-7 last:pb-0">
+                  {index < wecomSetupSteps.length - 1 && (
+                    <span className="absolute left-[9px] top-5 h-full w-px bg-[#cbd5e1]" />
+                  )}
+                  <span
+                    className={cn(
+                      'relative z-10 mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border bg-white',
+                      index < step
+                        ? 'border-[#0f766e] bg-[#0f766e] text-white'
+                        : index === step
+                          ? 'border-[#0f766e] text-[#0f766e] ring-2 ring-[#ccfbf1]'
+                          : 'border-[#cbd5e1] text-[#94a3b8]',
+                    )}
+                  >
+                    {index < step ? <Check className="h-3 w-3" /> : <span className="h-2 w-2 rounded-full bg-current" />}
+                  </span>
+                  <span>
+                    <span className="block text-xs text-[#64748b]">Step {index + 1}</span>
+                    <span className={cn('block text-sm font-semibold', index === step ? 'text-[#0f766e]' : 'text-[#475569]')}>
+                      {label}
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </aside>
+
+          <div className="agent-scrollbar overflow-auto px-6 py-6">
+            {step === 0 && <WeComGettingStarted />}
+            {step === 1 && (
+              <WeComConfigureStep
+                enabled={enabled}
+                existingWebhook={existingWebhook}
+                webhookUrl={webhookUrl}
+                onEnabledChange={setEnabled}
+                onWebhookUrlChange={setWebhookUrl}
+              />
+            )}
+            {step === 2 && (
+              <WeComCompleteStep
+                enabled={enabled}
+                existingWebhook={existingWebhook}
+                webhookUrl={webhookUrl}
+              />
+            )}
+            {error && (
+              <div className="mt-5 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {error}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between border-t border-[#d8dee6] bg-[#f8fafc] px-6 py-3">
+          <Button
+            className="h-8 rounded-md border-[#cbd5e1] bg-white px-3 text-xs text-[#334155] hover:bg-[#f8fafc]"
+            variant="outline"
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+          >
+            取消
+          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              className="h-8 rounded-md border-[#cbd5e1] bg-white px-3 text-xs text-[#334155] hover:bg-[#f8fafc]"
+              variant="outline"
+              disabled={busy || step === 0}
+              onClick={() => setStep((current) => Math.max(0, current - 1))}
+            >
+              上一步
+            </Button>
+            {step < wecomSetupSteps.length - 1 ? (
+              <Button
+                className="h-8 rounded-md bg-[#0f766e] px-3 text-xs text-white hover:bg-[#115e59]"
+                disabled={busy || !canContinue}
+                onClick={handleNext}
+              >
+                下一步
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Button>
+            ) : (
+              <Button
+                className="h-8 rounded-md bg-[#0f766e] px-3 text-xs text-white hover:bg-[#115e59]"
+                disabled={busy || !hasUsableWebhook}
+                onClick={handleSave}
+              >
+                保存连接
+              </Button>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function WeComGettingStarted() {
+  return (
+    <section>
+      <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#0f766e]">Step 1</div>
+      <h2 className="mt-1 text-xl font-semibold tracking-tight text-[#111827]">Getting started</h2>
+      <p className="mt-2 max-w-4xl text-sm leading-6 text-[#334155]">
+        连接企业微信后，Agent 可以把自动化结果、任务失败原因和审批等待提醒发送到指定群聊。
+      </p>
+      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+        <div className="rounded-md border border-[#d8dee6] bg-white p-5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[#111827]">
+            <KeyRound className="h-4 w-4 text-[#0f766e]" />
+            你需要准备
+          </div>
+          <ul className="mt-4 space-y-2 text-sm leading-6 text-[#334155]">
+            <li>企业微信群机器人 webhook URL</li>
+            <li>确认群成员知道该机器人会接收运维通知</li>
+          </ul>
+        </div>
+        <div className="rounded-md border border-[#d8dee6] bg-white p-5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[#111827]">
+            <BellRing className="h-4 w-4 text-[#0f766e]" />
+            Agent 可发送
+          </div>
+          <ul className="mt-4 space-y-2 text-sm leading-6 text-[#334155]">
+            <li>自动化执行成功、失败、取消结果</li>
+            <li>任务审批提醒和关键状态摘要</li>
+          </ul>
+        </div>
+      </div>
+      <div className="mt-5 flex items-start gap-3 rounded-md border border-[#7dd3fc] bg-[#f0f9ff] px-4 py-3 text-sm leading-6 text-[#075985]">
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+        webhook 是敏感地址。系统会把它保存在 AgentSpace 配置中，页面只显示掩码，模型也不会看到真实 URL。
+      </div>
+    </section>
+  );
+}
+
+function WeComConfigureStep({
+  enabled,
+  existingWebhook,
+  onEnabledChange,
+  onWebhookUrlChange,
+  webhookUrl,
+}: {
+  enabled: boolean;
+  existingWebhook?: string;
+  onEnabledChange: (enabled: boolean) => void;
+  onWebhookUrlChange: (value: string) => void;
+  webhookUrl: string;
+}) {
+  return (
+    <section>
+      <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#0f766e]">Step 2</div>
+      <h2 className="mt-1 text-xl font-semibold tracking-tight text-[#111827]">Configure webhook</h2>
+      <p className="mt-2 max-w-4xl text-sm leading-6 text-[#334155]">
+        粘贴企业微信群机器人 webhook。已有连接留空表示沿用当前地址；输入新地址会替换旧连接。
+      </p>
+      <div className="mt-5 rounded-md border border-[#d8dee6] bg-white p-5">
+        <label className="flex cursor-pointer items-start gap-3">
+          <input
+            checked={enabled}
+            className="mt-1 h-4 w-4 accent-[#0f766e]"
+            type="checkbox"
+            onChange={(event) => onEnabledChange(event.target.checked)}
+          />
+          <span>
+            <span className="block text-sm font-semibold text-[#111827]">启用企业微信通知</span>
+            <span className="mt-1 block text-sm leading-6 text-[#64748b]">
+              启用后，Agent 会获得企业微信系统工具，自动化完成后也会触发结果通知。
+            </span>
+          </span>
+        </label>
+
+        {enabled && (
+          <div className="mt-5">
+            <LightField
+              label="Webhook URL"
+              hint={existingWebhook ? `当前已配置：${maskWebhook(existingWebhook)}。留空则沿用当前地址。` : '必填。示例：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...'}
+            >
+              <input
+                className={controlClassName}
+                type="password"
+                value={webhookUrl}
+                onChange={(event) => onWebhookUrlChange(event.target.value)}
+                placeholder={existingWebhook ? '粘贴新 webhook 以替换当前连接' : '请输入企业微信机器人 webhook'}
+              />
+            </LightField>
+          </div>
+        )}
+      </div>
+      <div className="mt-4 flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+        企业微信群机器人没有 OAuth 授权过程，保存前请确认 webhook 来自正确群聊。
+      </div>
+    </section>
+  );
+}
+
+function WeComCompleteStep({
+  enabled,
+  existingWebhook,
+  webhookUrl,
+}: {
+  enabled: boolean;
+  existingWebhook?: string;
+  webhookUrl: string;
+}) {
+  const effectiveWebhook = webhookUrl.trim() ? webhookUrl : existingWebhook;
+  return (
+    <section>
+      <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#0f766e]">Step 3</div>
+      <h2 className="mt-1 text-xl font-semibold tracking-tight text-[#111827]">Complete</h2>
+      <p className="mt-2 max-w-4xl text-sm leading-6 text-[#334155]">确认配置后保存，当前 Agent 会立即使用新的企业微信连接。</p>
+      <div className="mt-5 overflow-hidden rounded-md border border-[#d8dee6] bg-white">
+        <div className="grid grid-cols-[160px_minmax(0,1fr)] border-b border-[#eef2f7]">
+          <div className="bg-[#f8fafc] px-4 py-3 text-sm font-semibold text-[#475569]">Status</div>
+          <div className="px-4 py-3 text-sm text-[#111827]">{enabled ? 'Enabled' : 'Disabled'}</div>
+        </div>
+        <div className="grid grid-cols-[160px_minmax(0,1fr)] border-b border-[#eef2f7]">
+          <div className="bg-[#f8fafc] px-4 py-3 text-sm font-semibold text-[#475569]">Type</div>
+          <div className="px-4 py-3 text-sm text-[#111827]">Enterprise WeChat group robot webhook</div>
+        </div>
+        <div className="grid grid-cols-[160px_minmax(0,1fr)]">
+          <div className="bg-[#f8fafc] px-4 py-3 text-sm font-semibold text-[#475569]">Webhook</div>
+          <div className="min-w-0 break-all px-4 py-3 font-mono text-xs text-[#475569]">
+            {enabled ? maskWebhook(effectiveWebhook) : '-'}
+          </div>
+        </div>
+      </div>
+      <div className="mt-5 flex items-start gap-3 rounded-md border border-[#bbf7d0] bg-[#f0fdf4] px-4 py-3 text-sm leading-6 text-[#166534]">
+        <MessageSquare className="mt-0.5 h-4 w-4 shrink-0" />
+        保存后，自动化任务的成功、失败、取消结果会由后端兜底推送，不依赖模型主动调用工具。
+      </div>
+    </section>
   );
 }
 

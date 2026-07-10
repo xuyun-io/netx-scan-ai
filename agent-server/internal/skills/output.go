@@ -39,6 +39,16 @@ type OutputDisplay struct {
 	Collapsed bool   `json:"collapsed,omitempty"` // whether to collapse by default
 }
 
+// ArtifactCandidate describes a file or blob produced by a skill action.
+// The host can decide whether to persist it as a durable artifact.
+type ArtifactCandidate struct {
+	Ref         string `json:"ref"`                   // Path or URI, preferably relative to the runner-managed staging directory.
+	Name        string `json:"name,omitempty"`        // Suggested artifact filename.
+	MimeType    string `json:"mimeType,omitempty"`    // MIME type, for example text/csv or application/pdf.
+	Size        int64  `json:"size,omitempty"`        // Size in bytes when known.
+	Description string `json:"description,omitempty"` // Short human-facing description.
+}
+
 // OutputMetadata contains execution metadata produced by the runner.
 type OutputMetadata struct {
 	Skill      string `json:"skill"`
@@ -55,13 +65,14 @@ type OutputMetadata struct {
 // their own schemas while the host can still handle status, message, errors
 // and display hints in a consistent way.
 type SkillOutput struct {
-	Version  string          `json:"version"`
-	Status   OutputStatus    `json:"status"`
-	Message  string          `json:"message"`
-	Data     map[string]any  `json:"data,omitempty"`
-	Error    *OutputError    `json:"error,omitempty"`
-	Display  *OutputDisplay  `json:"display,omitempty"`
-	Metadata OutputMetadata  `json:"metadata"`
+	Version   string              `json:"version"`
+	Status    OutputStatus        `json:"status"`
+	Message   string              `json:"message"`
+	Data      map[string]any      `json:"data,omitempty"`
+	Error     *OutputError        `json:"error,omitempty"`
+	Display   *OutputDisplay      `json:"display,omitempty"`
+	Artifacts []ArtifactCandidate `json:"artifacts,omitempty"`
+	Metadata  OutputMetadata      `json:"metadata"`
 }
 
 // IsError reports whether the skill output represents a failure.
@@ -74,9 +85,9 @@ func (o *SkillOutput) IsError() bool {
 
 // NormalizeSkillOutput converts raw script output into a unified SkillOutput envelope.
 // It handles three cases:
-//   1. stdout is already a valid SkillOutput envelope -> use it directly
-//   2. stdout is JSON but not an envelope -> wrap it as data
-//   3. stdout is plain text or empty -> wrap it as message
+//  1. stdout is already a valid SkillOutput envelope -> use it directly
+//  2. stdout is JSON but not an envelope -> wrap it as data
+//  3. stdout is plain text or empty -> wrap it as message
 func NormalizeSkillOutput(stdout, stderr string, exitCode int, meta OutputMetadata) *SkillOutput {
 	stdout = strings.TrimSpace(stdout)
 	stderr = strings.TrimSpace(stderr)

@@ -50,7 +50,7 @@ npm run dev
 
 ```bash
 cd netx-ai/agent-server
-go run ./cmd/server
+go run .
 ```
 
 ## 构建生产包

@@ -9,6 +9,7 @@ Use this reference when adding or changing Chain287 read-only actions.
 - Prefer `CHAIN287_RPC_URL`; fall back to `ETH_RPC_URL`.
 - Keep every action read-only. Do not use `cast send`, private keys, keystores, or unlocked accounts.
 - Return one JSON object on stdout. Put human-readable failures on stderr and exit non-zero.
+- Prefer structured JSON-RPC / `cast call` reads over parsing local deployment files. Local `bundle/` files are useful references, but agent skills should work from chain state.
 
 ## Action Shape
 
@@ -26,6 +27,7 @@ The Go host reads `tools.yaml` at execution time, so action changes are hot-load
 
 | Script | Purpose |
 |---|---|
+| `scripts/chain-rpc.sh` | Command catalog, RPC snapshot, sync status, chain mode, block/account/transaction lookup |
 | `scripts/chain-basic.sh` | Single-call chain state: block height, chain ID, RPC alive, genesis hash |
 | `scripts/chain-analytics.sh` | Multi-block analysis: recent_blocks, chain_health |
 | `scripts/validator-node.sh` | Validator set and node peer queries |
@@ -50,7 +52,30 @@ cast rpc net_peerCount --rpc-url "$CHAIN287_RPC_URL"
 cast call 0x0000000000000000000000000000000000001000 \
   "getValidators()(address[])" \
   --rpc-url "$CHAIN287_RPC_URL"
+
+# Chain mode / StakeHub activation
+cast call 0x0000000000000000000000000000000000002002 \
+  "transferGasLimit()(uint256)" \
+  --rpc-url "$CHAIN287_RPC_URL"
+
+# Transaction / receipt read-only lookup
+cast rpc eth_getTransactionByHash 0x... --rpc-url "$CHAIN287_RPC_URL"
+cast rpc eth_getTransactionReceipt 0x... --rpc-url "$CHAIN287_RPC_URL"
 ```
+
+## Migration Notes from Bundle Scripts
+
+Migrated or mirrored read-only logic:
+
+- `bundle/ops/11-verify-cluster.sh`: RPC health, chain ID, genesis hash, peer count, chain mode, validator set, recent miner distribution.
+- `bundle/check_validators.sh`: active validator list and recent block production checks.
+- `joinValidatorSet/scripts/06-joiner-verify.sh`: peer count, block movement, genesis consistency, block lag checks.
+- `joinValidatorSet/scripts/07-miner-block.sh`: miner distribution sampling.
+
+Explicitly excluded from skills:
+
+- `cast send`, `delegate`, `undelegate`, `claim`, validator registration, private-key or keystore access.
+- Docker start/stop, SSM remote execution, file synchronization, NAT mutation, crontab installation.
 
 ## Output envelope
 

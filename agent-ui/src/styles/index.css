@@ -77,10 +77,32 @@ button:disabled {
 }
 
 .agent-gradient-title {
-  background: linear-gradient(90deg, #12a8ff 0%, #7473ff 54%, #a537ff 100%);
+  background: linear-gradient(
+    90deg,
+    #12a8ff 0%,
+    #7473ff 22%,
+    #a537ff 42%,
+    #e8e0ff 48%,
+    #ffffff 50%,
+    #e8e0ff 52%,
+    #a537ff 58%,
+    #7473ff 78%,
+    #12a8ff 100%
+  );
+  background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  animation: agent-gradient-scan 2.5s linear infinite;
+}
+
+@keyframes agent-gradient-scan {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 100% 50%;
+  }
 }
 
 @keyframes progress-indeterminate {

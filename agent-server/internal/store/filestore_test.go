@@ -23,8 +23,7 @@ func TestUpdateAgentSpace(t *testing.T) {
 	}
 
 	updated, err := s.UpdateAgentSpace(ctx, model.AgentSpace{
-		ID:          space.ID,
-		Name:        "updated",
+		Name:        "test",
 		Description: "updated description",
 		LLM: model.LLMConfig{
 			Provider: "openai",
@@ -37,8 +36,8 @@ func TestUpdateAgentSpace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Name != "updated" {
-		t.Fatalf("name = %q, want updated", updated.Name)
+	if updated.Name != "test" {
+		t.Fatalf("name = %q, want test", updated.Name)
 	}
 	if updated.Description != "updated description" {
 		t.Fatalf("description = %q", updated.Description)
@@ -53,12 +52,12 @@ func TestUpdateAgentSpace(t *testing.T) {
 		t.Fatal("OLD_KEY should have been replaced")
 	}
 
-	loaded, err := s.GetAgentSpace(ctx, space.ID)
+	loaded, err := s.GetAgentSpace(ctx, space.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Name != "updated" {
-		t.Fatalf("loaded name = %q", loaded.Name)
+	if loaded.Name != "test" {
+		t.Fatalf("loaded name = %q, want test", loaded.Name)
 	}
 	if loaded.Environment["NEW_KEY"] != "new-value" {
 		t.Fatalf("loaded environment NEW_KEY = %q", loaded.Environment["NEW_KEY"])
@@ -70,7 +69,7 @@ func TestFileStorePersistsAgentTaskAndDocument(t *testing.T) {
 	s := New(t.TempDir())
 
 	space, err := s.CreateAgentSpace(ctx, model.AgentSpace{
-		Name: "test",
+		Name: "test2",
 		Environment: model.EnvVars{
 			"CHAIN287_RPC_URL": "https://rpc.chain287.example",
 		},
@@ -78,7 +77,7 @@ func TestFileStorePersistsAgentTaskAndDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loadedSpace, err := s.GetAgentSpace(ctx, space.ID)
+	loadedSpace, err := s.GetAgentSpace(ctx, space.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,8 +86,8 @@ func TestFileStorePersistsAgentTaskAndDocument(t *testing.T) {
 	}
 
 	task, err := s.CreateTask(ctx, model.Task{
-		AgentSpaceID: space.ID,
-		Instruction:  "生成 validator 巡检报告",
+		AgentSpaceName: space.Name,
+		Instruction:    "生成 validator 巡检报告",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -98,14 +97,14 @@ func TestFileStorePersistsAgentTaskAndDocument(t *testing.T) {
 	}
 
 	if err := s.AppendTaskRecord(ctx, model.Record{
-		AgentSpaceID: space.ID,
-		TaskID:       task.ID,
-		Type:         model.RecordStatus,
-		Content:      "created",
+		AgentSpaceName: space.Name,
+		TaskID:         task.ID,
+		Type:           model.RecordStatus,
+		Content:        "created",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	records, err := s.ListRecords(ctx, space.ID, task.ID, "", "")
+	records, err := s.ListRecords(ctx, space.Name, task.ID, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,18 +112,84 @@ func TestFileStorePersistsAgentTaskAndDocument(t *testing.T) {
 		t.Fatalf("records length = %d, want 1", len(records))
 	}
 
-	doc, err := s.CreateDocument(ctx, space.ID, "runbook.md", "text/markdown", base64.StdEncoding.EncodeToString([]byte("# runbook")))
+	doc, err := s.CreateDocument(ctx, space.Name, "runbook.md", "text/markdown", base64.StdEncoding.EncodeToString([]byte("# runbook")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if doc.Status != model.StatusActive {
 		t.Fatalf("document status = %s", doc.Status)
 	}
-	deleted, err := s.DeleteDocument(ctx, space.ID, doc.ID)
+	deleted, err := s.DeleteDocument(ctx, space.Name, doc.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deleted.Status != model.StatusInactive {
 		t.Fatalf("deleted document status = %s", deleted.Status)
+	}
+}
+
+func TestAppendTurnTitlesUntitledConversationFromFirstPrompt(t *testing.T) {
+	ctx := context.Background()
+	s := New(t.TempDir())
+
+	space, err := s.CreateAgentSpace(ctx, model.AgentSpace{Name: "chat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := s.CreateConversation(ctx, space.Name, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversation.Title != "新的会话" {
+		t.Fatalf("initial title = %q", conversation.Title)
+	}
+
+	prompt := "请检查 Chain287 最近 120 个块是否有验证者出块异常，并生成摘要"
+	if err := s.AppendTurn(ctx, model.Turn{
+		ID:             NewTurnID(),
+		AgentSpaceName: space.Name,
+		ConversationID: conversation.ID,
+		Status:         model.StatusInProgress,
+		Prompt:         prompt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.GetConversation(ctx, space.Name, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTitle := titleFromConversationPrompt(prompt)
+	if loaded.Title != wantTitle {
+		t.Fatalf("title = %q, want %q", loaded.Title, wantTitle)
+	}
+}
+
+func TestAppendTurnKeepsExistingConversationTitle(t *testing.T) {
+	ctx := context.Background()
+	s := New(t.TempDir())
+
+	space, err := s.CreateAgentSpace(ctx, model.AgentSpace{Name: "chat2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := s.CreateConversation(ctx, space.Name, "自定义标题")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendTurn(ctx, model.Turn{
+		ID:             NewTurnID(),
+		AgentSpaceName: space.Name,
+		ConversationID: conversation.ID,
+		Status:         model.StatusInProgress,
+		Prompt:         "这个问题不应该覆盖标题",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.GetConversation(ctx, space.Name, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Title != "自定义标题" {
+		t.Fatalf("title = %q, want custom title", loaded.Title)
 	}
 }

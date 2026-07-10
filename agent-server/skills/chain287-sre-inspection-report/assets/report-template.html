@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'media',
+      theme: {
+        extend: {
+          colors: {
+            ok: { DEFAULT: '#10b981', soft: '#d1fae5', dark: '#065f46', glow: '#34d399' },
+            warn: { DEFAULT: '#f59e0b', soft: '#fef3c7', dark: '#92400e', glow: '#fbbf24' },
+            critical: { DEFAULT: '#ef4444', soft: '#fee2e2', dark: '#991b1b', glow: '#f87171' },
+            unknown: { DEFAULT: '#64748b', soft: '#e2e8f0', dark: '#334155', glow: '#94a3b8' },
+            accent: { DEFAULT: '#3b82f6', soft: '#dbeafe', dark: '#1d4ed8', glow: '#60a5fa' },
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Microsoft YaHei', 'sans-serif'],
+            mono: ['SFMono-Regular', 'Consolas', 'Liberation Mono', 'monospace'],
+          },
+          boxShadow: {
+            'glow-ok': '0 0 20px rgba(16, 185, 129, 0.35)',
+            'glow-warn': '0 0 20px rgba(245, 158, 11, 0.35)',
+            'glow-critical': '0 0 20px rgba(239, 68, 68, 0.35)',
+            'glow-unknown': '0 0 20px rgba(100, 116, 139, 0.3)',
+            'glow-accent': '0 0 25px rgba(59, 130, 246, 0.25)',
+          },
+          animation: {
+            'fade-in': 'fadeIn 0.6s ease-out',
+            'slide-up': 'slideUp 0.5s ease-out',
+          },
+          keyframes: {
+            fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
+            slideUp: { '0%': { opacity: '0', transform: 'translateY(12px)' }, '100%': { opacity: '1', transform: 'translateY(0)' } },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    .ring-progress {
+      background: conic-gradient(var(--ring-color) calc(var(--score) * 1%), #e2e8f0 0);
+    }
+    pre.raw-json { white-space: pre-wrap; word-break: break-word; }
+    .glass {
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .dark .glass {
+      background: rgba(15, 23, 42, 0.75);
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-slate-50 via-blue-50/40 to-indigo-50/30 text-slate-800 antialiased min-h-screen">
+  <noscript>
+    <div class="max-w-6xl mx-auto p-8">
+      <h1 class="text-2xl font-bold mb-4">{{TITLE}}</h1>
+      <p class="text-slate-600">此报告需要启用 JavaScript 才能完整展示。请启用浏览器 JavaScript 后刷新页面。</p>
+      <p class="text-sm text-slate-500 mt-2">生成时间：{{GENERATED_AT}} | 范围：{{SCOPE}}</p>
+    </div>
+  </noscript>
+
+  <div id="root"></div>
+
+  <script id="report-data" type="application/json">{{REPORT_DATA}}</script>
+
+  <script type="module">
+    import { h, render } from 'https://esm.sh/preact@10.19.3';
+    import { useState, useMemo } from 'https://esm.sh/preact@10.19.3/hooks';
+    import htm from 'https://esm.sh/htm@3.1.1';
+    const html = htm.bind(h);
+
+    const data = JSON.parse(document.getElementById('report-data').textContent);
+
+    const STATUS = {
+      ok: { label: '正常', class: 'bg-ok-soft text-ok-dark border-ok/20', dot: 'bg-ok', textClass: 'text-ok-dark', bgClass: 'bg-ok-soft', borderClass: 'border-ok/20', glow: 'shadow-glow-ok', iconBg: 'bg-ok/10 text-ok' },
+      warning: { label: '警告', class: 'bg-warn-soft text-warn-dark border-warn/20', dot: 'bg-warn', textClass: 'text-warn-dark', bgClass: 'bg-warn-soft', borderClass: 'border-warn/20', glow: 'shadow-glow-warn', iconBg: 'bg-warn/10 text-warn' },
+      critical: { label: '严重', class: 'bg-critical-soft text-critical-dark border-critical/20', dot: 'bg-critical', textClass: 'text-critical-dark', bgClass: 'bg-critical-soft', borderClass: 'border-critical/20', glow: 'shadow-glow-critical', iconBg: 'bg-critical/10 text-critical' },
+      unknown: { label: '未知', class: 'bg-unknown-soft text-unknown-dark border-unknown/20', dot: 'bg-unknown', textClass: 'text-unknown-dark', bgClass: 'bg-unknown-soft', borderClass: 'border-unknown/20', glow: 'shadow-glow-unknown', iconBg: 'bg-unknown/10 text-unknown' },
+    };
+
+    const LEVEL_META = {
+      ok: { icon: 'check', color: 'ok' },
+      warning: { icon: 'alert', color: 'warn' },
+      critical: { icon: 'cross', color: 'critical' },
+      unknown: { icon: 'question', color: 'unknown' },
+    };
+
+    const Badge = ({ level, pulse = false }) => {
+      const s = STATUS[level] || STATUS.unknown;
+      return html`
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border ${s.class} ${pulse && level === 'critical' ? 'animate-pulse' : ''}">
+          <span class="w-1.5 h-1.5 rounded-full ${s.dot}"></span>
+          ${s.label}
+        </span>
+      `;
+    };
+
+    const Card = ({ children, className = '', hover = true }) => html`
+      <div class="bg-white/80 dark:bg-slate-800/80 rounded-2xl border border-slate-200/80 dark:border-slate-700/60 shadow-sm ${hover ? 'hover:-translate-y-0.5 hover:shadow-md transition-all duration-300' : ''} ${className}">
+        ${children}
+      </div>
+    `;
+
+    const SectionTitle = ({ title, subtitle }) => html`
+      <div class="mb-4">
+        <h2 class="text-lg font-bold text-slate-900 dark:text-slate-100">${title}</h2>
+        ${subtitle && html`<p class="text-sm text-slate-500 dark:text-slate-400 mt-1">${subtitle}</p>`}
+      </div>
+    `;
+
+    const Icon = ({ name, className = '' }) => {
+      const icons = {
+        server: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>`,
+        cube: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>`,
+        users: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>`,
+        gift: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>`,
+        chart: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>`,
+        shield: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>`,
+        search: html`<svg class="w-4 h-4 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>`,
+        chevron: html`<svg class="w-4 h-4 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>`,
+        info: html`<svg class="w-4 h-4 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+        check: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`,
+        alert: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>`,
+        cross: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+        question: html`<svg class="w-5 h-5 ${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+      };
+      return icons[name] || null;
+    };
+
+    const ScoreRing = ({ score, overall }) => {
+      const color = {
+        ok: '#10b981',
+        warning: '#f59e0b',
+        critical: '#ef4444',
+        unknown: '#64748b',
+      }[overall] || '#64748b';
+      const glowClass = (STATUS[overall] || STATUS.unknown).glow;
+      return html`
+        <div class="relative w-28 h-28 rounded-full ring-progress ${glowClass} transition-shadow duration-500" style="--score: ${score}; --ring-color: ${color};">
+          <div class="absolute inset-2.5 bg-white dark:bg-slate-900 rounded-full flex flex-col items-center justify-center shadow-inner">
+            <span class="text-3xl font-extrabold text-slate-800 dark:text-slate-100">${score}</span>
+            <span class="text-[10px] text-slate-500 dark:text-slate-400 font-bold">健康</span>
+          </div>
+        </div>
+      `;
+    };
+
+    const Header = () => html`
+      <header class="relative overflow-hidden bg-gradient-to-r from-slate-900 via-blue-900 to-indigo-900 text-white">
+        <div class="absolute top-0 right-0 w-96 h-96 bg-accent/20 rounded-full blur-3xl -translate-y-1/2 translate-x-1/3"></div>
+        <div class="absolute bottom-0 left-0 w-72 h-72 bg-ok/10 rounded-full blur-3xl translate-y-1/2 -translate-x-1/3"></div>
+        <div class="relative max-w-7xl mx-auto px-6 py-10">
+          <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/20 text-blue-100 text-xs font-semibold tracking-wider uppercase backdrop-blur-sm mb-4">
+            <span class="w-1.5 h-1.5 rounded-full bg-ok glow-ok animate-pulse"></span>
+            Chain287 区块链 SRE 日常巡检
+          </div>
+          <h1 class="text-3xl md:text-4xl font-extrabold mb-4 tracking-tight">${data.title}</h1>
+          <div class="flex flex-wrap gap-x-6 gap-y-2 text-sm text-blue-100/80">
+            <span class="flex items-center gap-1.5"><${Icon} name="server" className="text-blue-200"/> 生成时间：${data.generatedAt}</span>
+            <span>范围：${data.scope}</span>
+            <span>检查项：${data.checkCount}</span>
+          </div>
+        </div>
+      </header>
+    `;
+
+    const NewbieSummary = () => html`
+      <${Card} className="bg-gradient-to-r from-accent-soft to-blue-50 dark:from-slate-800 dark:to-slate-800 border-accent/20 shadow-glow-accent animate-slide-up">
+        <div class="p-6">
+          <div class="flex items-start gap-4">
+            <div class="flex-shrink-0 w-10 h-10 rounded-xl bg-accent text-white flex items-center justify-center shadow-lg shadow-accent/30">
+              <${Icon} name="info"/>
+            </div>
+            <div>
+              <h3 class="font-bold text-slate-900 dark:text-slate-100 mb-2 text-lg">今日巡检速览（新人导读）</h3>
+              <p class="text-slate-700 dark:text-slate-300 leading-relaxed">${data.newbieSummary}</p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <${Badge} level="critical" pulse=${true}/>
+                <${Badge} level="warning"/>
+                <${Badge} level="ok"/>
+              </div>
+            </div>
+          </div>
+        </div>
+      </${Card}>
+    `;
+
+    const SummaryPanel = () => html`
+      <${Card} className="animate-slide-up" style="animation-delay: 0.05s">
+        <div class="p-5">
+          <${SectionTitle} title="执行摘要" subtitle="综合所有只读巡检项后的整体判断" />
+          <div class="flex items-center gap-5">
+            <${ScoreRing} score=${data.score} overall=${data.overall} />
+            <div class="flex-1 min-w-0">
+              <div class="mb-2"><${Badge} level=${data.overall} pulse=${data.overall === 'critical'}/></div>
+              <p class="text-slate-600 dark:text-slate-300 text-sm leading-relaxed mb-1">${data.summary}</p>
+              <p class="text-slate-500 dark:text-slate-400 text-sm">${data.notes}</p>
+            </div>
+          </div>
+        </div>
+      </${Card}>
+    `;
+
+    const CountPanel = () => html`
+      <${Card} className="animate-slide-up" style="animation-delay: 0.1s">
+        <div class="p-5">
+          <${SectionTitle} title="风险计数" />
+          <div class="grid grid-cols-2 gap-3">
+            ${[
+              ['critical', '严重', data.counts.critical, 'cross'],
+              ['warning', '警告', data.counts.warning, 'alert'],
+              ['ok', '正常', data.counts.ok, 'check'],
+              ['unknown', '未知', data.counts.unknown, 'question'],
+            ].map(([level, label, count, icon], idx) => html`
+              <div key=${level} class="group relative overflow-hidden rounded-xl p-3 border ${STATUS[level].borderClass} ${STATUS[level].bgClass} hover:-translate-y-1 hover:shadow-lg transition-all duration-300 animate-slide-up" style="animation-delay: ${0.15 + idx * 0.05}s">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <div class="text-2xl font-extrabold ${STATUS[level].textClass}">${count}</div>
+                    <div class="text-xs font-semibold opacity-80 mt-0.5">${label}</div>
+                  </div>
+                  <div class="w-8 h-8 rounded-lg ${STATUS[level].iconBg} flex items-center justify-center opacity-80 group-hover:scale-110 transition-transform">
+                    <${Icon} name=${icon}/>
+                  </div>
+                </div>
+              </div>
+            `)}
+          </div>
+        </div>
+      </${Card}>
+    `;
+
+    const ActionItems = () => html`
+      <${Card} className="mt-6 animate-slide-up" style="animation-delay: 0.2s">
+        <div class="p-5">
+          <${SectionTitle} title="建议操作（SRE Checklist）" subtitle="根据巡检数据推导出的具体可执行事项" />
+          <ul class="divide-y divide-slate-100 dark:divide-slate-700">
+            ${data.actionItems.map((item, idx) => html`
+              <li key=${idx} class="py-3 flex items-start gap-4 first:pt-0 last:pb-0 animate-slide-up" style="animation-delay: ${0.25 + idx * 0.04}s">
+                <div class="mt-0.5"><${Badge} level=${item.level} pulse=${item.level === 'critical'}/></div>
+                <div class="flex-1 min-w-0">
+                  <div class="font-semibold text-slate-900 dark:text-slate-100 text-sm">${item.title}</div>
+                  <div class="text-slate-500 dark:text-slate-400 text-sm mt-0.5">${item.description}</div>
+                </div>
+              </li>
+            `)}
+          </ul>
+        </div>
+      </${Card}>
+    `;
+
+    const SignalCard = ({ signal, index }) => {
+      const iconMap = {
+        'RPC / 节点': 'server',
+        '区块生产': 'cube',
+        '验证者集合': 'users',
+        '收益': 'gift',
+        '窗口统计': 'chart',
+        '操作说明': 'shield',
+      };
+      const icon = iconMap[signal.name] || 'info';
+      const renderItems = () => {
+        if (Array.isArray(signal.items) && signal.items.length) {
+          return html`
+            <ul class="text-sm leading-relaxed space-y-1">
+              ${signal.items.map((it, i) => html`
+                <li key=${i} class="flex items-start gap-2">
+                  <span class="text-slate-400 shrink-0">•</span>
+                  <span class="text-slate-500 dark:text-slate-400 shrink-0">${it.label}:</span>
+                  <span class="text-slate-700 dark:text-slate-200 font-medium break-all">${it.value}</span>
+                </li>
+              `)}
+            </ul>
+          `;
+        }
+        const lines = String(signal.value || '').split(/[;；]/).map(s => s.trim()).filter(Boolean);
+        if (lines.length > 1) {
+          return html`
+            <ul class="text-sm leading-relaxed space-y-1">
+              ${lines.map((line, i) => html`
+                <li key=${i} class="flex items-start gap-2">
+                  <span class="text-slate-400 shrink-0">•</span>
+                  <span class="text-slate-600 dark:text-slate-400">${line}</span>
+                </li>
+              `)}
+            </ul>
+          `;
+        }
+        return html`<p class="text-slate-600 dark:text-slate-400 text-sm leading-relaxed min-h-[3rem]">${signal.value}</p>`;
+      };
+      return html`
+        <${Card} className="animate-slide-up" style="animation-delay: ${0.3 + index * 0.05}s">
+          <div class="p-5">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-accent/20 to-accent/5 text-accent flex items-center justify-center shadow-sm">
+                <${Icon} name=${icon}/>
+              </div>
+              <h3 class="text-sm font-bold text-slate-700 dark:text-slate-200">${signal.name}</h3>
+            </div>
+            ${renderItems()}
+          </div>
+        </${Card}>
+      `;
+    };
+
+    const SignalGrid = () => html`
+      <section class="mt-6 animate-slide-up" style="animation-delay: 0.25s">
+        <${SectionTitle} title="关键信号" />
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          ${data.signals.map((s, i) => html`<${SignalCard} key=${i} signal=${s} index=${i} />`)}
+        </div>
+      </section>
+    `;
+
+    const MiniBar = ({ percent, level }) => {
+      const color = { ok: 'bg-ok', warning: 'bg-warn', critical: 'bg-critical', unknown: 'bg-unknown' }[level] || 'bg-slate-400';
+      return html`
+        <div class="w-full">
+          <div class="flex items-center justify-between text-xs mb-1">
+            <span class="text-slate-500 dark:text-slate-400">出块份额</span>
+            <span class="font-mono font-semibold text-slate-700 dark:text-slate-200">${percent}%</span>
+          </div>
+          <div class="h-1.5 w-full bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+            <div class="h-full ${color} rounded-full transition-all duration-700" style="width: ${Math.min(percent, 100)}%"></div>
+          </div>
+        </div>
+      `;
+    };
+
+    const ValidatorTable = () => {
+      const [filter, setFilter] = useState('');
+      const rows = useMemo(() => {
+        if (!filter.trim()) return data.validators;
+        const q = filter.toLowerCase();
+        return data.validators.filter(v =>
+          (v.moniker || '').toLowerCase().includes(q) ||
+          (v.operator || '').toLowerCase().includes(q) ||
+          (v.note || '').toLowerCase().includes(q)
+        );
+      }, [filter]);
+      return html`
+        <section class="mt-8 animate-slide-up" style="animation-delay: 0.35s">
+          <${SectionTitle} title="验证者健康明细" subtitle="合并自 validator_overview / block_stats / rewards / jailed_status / window_stats" />
+          <${Card} hover=${false}>
+            <div class="p-4 border-b border-slate-100 dark:border-slate-700 flex flex-col sm:flex-row sm:items-center gap-3">
+              <div class="relative flex-1 max-w-md">
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"><${Icon} name="search"/></span>
+                <input
+                  type="text"
+                  value=${filter}
+                  onInput=${e => setFilter(e.currentTarget.value)}
+                  placeholder="搜索验证者名称 / Operator / 备注..."
+                  class="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition-shadow"
+                />
+              </div>
+              <div class="text-xs text-slate-500 dark:text-slate-400">共 ${rows.length} 条${filter ? ` / 筛选自 ${data.validators.length}` : ''}</div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm text-left">
+                <thead class="bg-slate-50 dark:bg-slate-800/80 text-xs uppercase text-slate-500 dark:text-slate-400 font-semibold">
+                  <tr>
+                    <th class="px-5 py-3">状态</th>
+                    <th class="px-5 py-3">名称 / Operator</th>
+                    <th class="px-5 py-3">近期出块</th>
+                    <th class="px-5 py-3 min-w-[140px]">份额</th>
+                    <th class="px-5 py-3 text-right">余额 (NETX)</th>
+                    <th class="px-5 py-3 text-right">收益 (NETX)</th>
+                    <th class="px-5 py-3">备注</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 dark:divide-slate-700">
+                  ${rows.length === 0
+                    ? html`<tr><td colspan="7" class="px-5 py-8 text-center text-slate-500 dark:text-slate-400">无匹配验证者数据</td></tr>`
+                    : rows.map((v, i) => html`
+                      <tr key=${i} class="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors">
+                        <td class="px-5 py-3.5"><${Badge} level=${v.level} pulse=${v.level === 'critical'}/></td>
+                        <td class="px-5 py-3.5">
+                          <div class="font-semibold text-slate-900 dark:text-slate-100">${v.moniker}</div>
+                          <div class="font-mono text-xs text-slate-500 dark:text-slate-400 truncate max-w-[200px]">${v.operator}</div>
+                        </td>
+                        <td class="px-5 py-3.5 text-slate-600 dark:text-slate-300">${v.recent}</td>
+                        <td class="px-5 py-3.5">
+                          ${v.share ? html`<${MiniBar} percent=${v.sharePercent || 0} level=${v.level}/>` : html`<span class="text-slate-400 text-xs">-</span>`}
+                        </td>
+                        <td class="px-5 py-3.5 text-right font-mono text-slate-700 dark:text-slate-200">${v.balance}</td>
+                        <td class="px-5 py-3.5 text-right font-mono text-slate-700 dark:text-slate-200">${v.rewards}</td>
+                        <td class="px-5 py-3.5 text-slate-600 dark:text-slate-300">${v.note}</td>
+                      </tr>
+                    `)}
+                </tbody>
+              </table>
+            </div>
+          </${Card}>
+        </section>
+      `;
+    };
+
+    const CheckTable = () => {
+      const [open, setOpen] = useState(true);
+      return html`
+        <section class="mt-8 animate-slide-up" style="animation-delay: 0.4s">
+          <div class="flex items-center justify-between mb-4">
+            <${SectionTitle} title="巡检项明细" subtitle="原始检查项及其风险等级" />
+            <button onClick=${() => setOpen(!open)} class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}">
+              <${Icon} name="chevron"/>
+            </button>
+          </div>
+          ${open && html`
+            <${Card} hover=${false}>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                  <thead class="bg-slate-50 dark:bg-slate-800/80 text-xs uppercase text-slate-500 dark:text-slate-400 font-semibold">
+                    <tr>
+                      <th class="px-5 py-3 w-24">级别</th>
+                      <th class="px-5 py-3">来源</th>
+                      <th class="px-5 py-3">结论</th>
+                      <th class="px-5 py-3">关键数据</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-100 dark:divide-slate-700">
+                    ${data.checks.map((c, i) => html`
+                      <tr key=${i} class="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors">
+                        <td class="px-5 py-3.5"><${Badge} level=${c.level} pulse=${c.level === 'critical'}/></td>
+                        <td class="px-5 py-3.5 text-slate-700 dark:text-slate-200 font-medium">${c.source}</td>
+                        <td class="px-5 py-3.5 text-slate-700 dark:text-slate-200">${c.message}</td>
+                        <td class="px-5 py-3.5"><code class="font-mono text-xs bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-700 dark:text-slate-300">${c.data}</code></td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>
+            </${Card}>
+          `}
+        </section>
+      `;
+    };
+
+    const Collapsible = ({ title, subtitle, children, defaultOpen = false }) => {
+      const [open, setOpen] = useState(defaultOpen);
+      return html`
+        <section class="mt-6 animate-slide-up" style="animation-delay: 0.45s">
+          <${Card} hover=${false} className="overflow-hidden border-slate-200/80 dark:border-slate-700/60 hover:border-accent/30 transition-colors">
+            <button onClick=${() => setOpen(!open)} class="w-full p-5 flex items-center justify-between text-left">
+              <div>
+                <h3 class="font-bold text-slate-900 dark:text-slate-100">${title}</h3>
+                ${subtitle && html`<p class="text-sm text-slate-500 dark:text-slate-400 mt-0.5">${subtitle}</p>`}
+              </div>
+              <span class="text-slate-400 transition-transform ${open ? 'rotate-180' : ''}"><${Icon} name="chevron"/></span>
+            </button>
+            ${open && html`<div class="px-5 pb-5 border-t border-slate-100 dark:border-slate-700 pt-4">${children}</div>`}
+          </${Card}>
+        </section>
+      `;
+    };
+
+    const Explanations = () => html`
+      <${Collapsible} title="指标解释（新人手册）" subtitle="不懂区块链？点击查看关键术语说明">
+        <dl class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 text-sm">
+          ${data.explanations.map((e, i) => html`
+            <div key=${i} class="rounded-lg p-3 bg-slate-50 dark:bg-slate-800/50">
+              <dt class="font-bold text-slate-900 dark:text-slate-100">${e.title}</dt>
+              <dd class="text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">${e.description}</dd>
+            </div>
+          `)}
+        </dl>
+      </${Collapsible}>
+    `;
+
+    const RawJson = () => html`
+      <${Collapsible} title="查看原始巡检 JSON" subtitle="用于问题追溯和二次开发">
+        <pre class="raw-json bg-slate-900 text-slate-100 p-4 rounded-xl text-xs font-mono overflow-auto max-h-[600px] shadow-inner">${data.rawJson}</pre>
+      </${Collapsible}>
+    `;
+
+    const App = () => html`
+      <${Header} />
+      <main class="max-w-7xl mx-auto px-6 py-8">
+        <${NewbieSummary} />
+        <div class="mt-6 grid grid-cols-1 lg:grid-cols-5 gap-6">
+          <div class="lg:col-span-3"><${SummaryPanel} /></div>
+          <div class="lg:col-span-2"><${CountPanel} /></div>
+        </div>
+        <${ActionItems} />
+        <${SignalGrid} />
+        <${ValidatorTable} />
+        <${CheckTable} />
+        <${Explanations} />
+        <${RawJson} />
+        <footer class="mt-12 text-center text-xs text-slate-400 dark:text-slate-500">
+          由 chain287-sre-inspection-report skill 生成 · Preact + Tailwind CSS
+        </footer>
+      </main>
+    `;
+
+    render(html`<${App} />`, document.getElementById('root'));
+  </script>
+
+  <!-- Tailwind safe-list: ensures Play CDN compiles all dynamic classes used by JS -->
+  <div class="hidden"
+    aria-hidden="true"
+    data-safelist="true"
+    style="display:none"
+  >
+    <span class="bg-ok-soft text-ok-dark border-ok/20 bg-ok text-ok shadow-glow-ok bg-ok/10"></span>
+    <span class="bg-warn-soft text-warn-dark border-warn/20 bg-warn text-warn shadow-glow-warn bg-warn/10"></span>
+    <span class="bg-critical-soft text-critical-dark border-critical/20 bg-critical text-critical shadow-glow-critical bg-critical/10"></span>
+    <span class="bg-unknown-soft text-unknown-dark border-unknown/20 bg-unknown text-unknown shadow-glow-unknown bg-unknown/10"></span>
+    <span class="bg-accent-soft text-accent-dark border-accent/20 bg-accent text-accent shadow-glow-accent bg-accent/10"></span>
+    <span class="rotate-180"></span>
+    <div class="bg-slate-50 dark:bg-slate-800 text-slate-100 dark:text-slate-900"></div>
+  </div>
+</body>
+</html>

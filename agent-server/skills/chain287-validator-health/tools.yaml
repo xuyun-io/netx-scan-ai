@@ -1,5 +1,15 @@
 version: "1"
 actions:
+  validator_overview:
+    description: 从链上读取注册验证者、活跃集合、jail 状态、StakeCredit、余额、近期出块，生成验证者总览。
+    readonly: true
+    approval: false
+    timeoutSeconds: 90
+    command: scripts/validator-overview.sh
+    args:
+      - validator_overview
+      - ${sample}
+
   validator_block_stats:
     description: 统计最近 N 个块中每个活跃验证者的出块数量，识别漏块节点。
     readonly: true
@@ -27,3 +37,15 @@ actions:
     command: scripts/validator-jailed-status.sh
     args:
       - validator_jailed_status
+
+  validator_window_stats:
+    description: 统计时间窗口或块区间内各验证者出块、tx、gasUsed、operator 余额变化。
+    readonly: true
+    approval: false
+    timeoutSeconds: 120
+    command: scripts/validator-window-stats.sh
+    args:
+      - validator_window_stats
+      - ${window_sec}
+      - ${from_block}
+      - ${to_block}

@@ -5,7 +5,11 @@
 set -eu
 
 action="validator_block_stats"
-sample_raw="${1:-100}"
+if [ "${1:-}" = "$action" ]; then
+  sample_raw="${2:-100}"
+else
+  sample_raw="${1:-100}"
+fi
 case "$sample_raw" in
   '' | *'${'*) sample=100 ;;
   *) sample="$sample_raw" ;;

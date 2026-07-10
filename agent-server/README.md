@@ -20,16 +20,48 @@ Go + Google ADK-Go v2 的后端骨架，按 `requirements.md` 的第一版范围
 ```bash
 cd netx-ai/agent-server
 go test ./...
-go run ./cmd/server
+go run .
 ```
 
-默认配置：
+默认配置在 `config/app.yaml.example` 中，复制后使用：
+
+```bash
+cp config/app.yaml.example config/app.yaml
+```
+
+```yaml
+httpAddr: :8080
+path:
+  root: .
+  agents: data/agents
+  web: web/dist
+  skills: skills
+publicURL: ""
+logLevel: info
+logFormat: json
+```
+
+`publicURL` 是 Go 后端应用级配置，不属于任何 AgentSpace。它用于生成企业微信通知中的 Web UI 深链接，例如：
+
+```yaml
+publicURL: https://netx-agent.example.com
+publicURL: http://10.0.1.20:8080
+```
+
+配置后，自动化结果和审批提醒会包含 `/{agentSpaceName}/#/task/{taskId}` 任务详情链接，接收人可以直接查看 Task 记录和 Artifacts。该地址必须是企业微信接收人能访问的公网或内网地址；不要填写容器内部地址。
+
+运行日志使用结构化 JSON 输出，适合容器日志采集和检索：
+
+```yaml
+logFormat: json   # json 或 console
+logLevel: info    # debug、info、warn、error
+```
+
+当前会记录服务启动/停止、HTTP 请求、自动化注册与触发、任务执行结果、企业微信通知发送状态等关键运行事件。日志只记录运行诊断字段，不记录 API Key、企业微信 webhook 或完整任务指令。
+
+Agent/Skill 执行环境变量可以在进程环境中配置，也可以按 AgentSpace 单独配置：
 
 ```text
-NETX_HTTP_ADDR=:8080
-NETX_DATA_DIR=./data/agents
-NETX_WEB_DIST=./web/dist
-NETX_SKILLS_DIR=./skills
 GOOGLE_API_KEY=<Gemini API key, or configure per AgentSpace environment>
 CHAIN287_RPC_URL=<Chain287 RPC endpoint>
 ```
@@ -45,7 +77,7 @@ npm run build
 cd ../agent-server
 mkdir -p web/dist
 cp -r ../agent-ui/dist/* web/dist/
-go run ./cmd/server
+go run .
 ```
 
 Windows PowerShell 可用：
@@ -57,7 +89,7 @@ npm run build
 cd ..\agent-server
 New-Item -ItemType Directory -Force web\dist | Out-Null
 Copy-Item -Recurse -Force ..\agent-ui\dist\* web\dist
-go run .\cmd\server
+go run .
 ```
 
 ## API 示例
@@ -77,7 +109,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/createAgentSpace \\
 ## 数据目录
 
 ```text
-{NETX_DATA_DIR}/{agentSpaceId}/
+{dataDir}/{agentSpaceName}/
 ├── agent.yaml
 ├── conversations/{conversationId}/
 │   ├── conversation.yaml
@@ -98,7 +130,13 @@ curl -X POST http://127.0.0.1:8080/api/v1/createAgentSpace \\
 
 ```bash
 cd netx-ai
-export CHAIN287_RPC_URL=https://your-chain287-rpc.example
+# 编辑 agent-server/config/app.yaml，容器内工作目录为 /app，建议：
+#   path:
+#     root: /app
+#     agents: data/agents
+#     web: web/dist
+#     skills: skills
+# 同时配置 publicURL、auth、AgentSpace 环境变量等
 docker compose up --build
 ```
 

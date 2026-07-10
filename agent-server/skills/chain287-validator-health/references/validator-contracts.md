@@ -55,6 +55,8 @@ cast call 0x0000000000000000000000000000000000002002 \
 
 返回：operatorAddrs[], creditAddrs[], totalLength
 
+函数 selector：`0xbff02e20`
+
 ### consensus 地址转 operator 地址
 
 ```sh
@@ -62,6 +64,8 @@ cast call 0x0000000000000000000000000000000000002002 \
   "consensusToOperator(address)(address)" 0x... \
   --rpc-url "$CHAIN287_RPC_URL"
 ```
+
+函数 selector：`0x86d54506`
 
 ### operator 地址转 consensus 地址
 
@@ -71,6 +75,20 @@ cast call 0x0000000000000000000000000000000000002002 \
   --rpc-url "$CHAIN287_RPC_URL"
 ```
 
+函数 selector：`0x059ddd22`
+
+### 读取 validator 基础状态
+
+```sh
+cast call 0x0000000000000000000000000000000000002002 \
+  "getValidatorBasicInfo(address)(uint256,bool,uint256)" 0x... \
+  --rpc-url "$CHAIN287_RPC_URL"
+```
+
+返回：createdTime, jailed, jailUntil
+
+函数 selector：`0xcbb04d9d`
+
 ### 读取 StakeCredit Pool 总额
 
 ```sh
@@ -78,3 +96,29 @@ cast call 0x...creditContract... \
   "totalPooledBNB()(uint256)" \
   --rpc-url "$CHAIN287_RPC_URL"
 ```
+
+函数 selector：`0x15d1f898`
+
+### 读取 operator 在 StakeCredit 中的质押池份额
+
+```sh
+cast call 0x...creditContract... \
+  "getPooledBNB(address)(uint256)" 0x...operator... \
+  --rpc-url "$CHAIN287_RPC_URL"
+```
+
+函数 selector：`0x0913db47`
+
+## 从同事脚本迁移时的边界
+
+可以迁移：
+
+- `bundle/ops/15a-validator-stats.py` 的 moniker、operator、consensus、pool、余额、出块窗口统计思路。
+- `bundle/check_validators.sh` 和 `joinValidatorSet/scripts/07-miner-block.sh` 的 recent miner 分布统计。
+- `joinValidatorSet/scripts/08-stop-and-wait-jailed.sh` 中只读的 `getValidatorBasicInfo` jail 查询。
+
+必须排除：
+
+- 停容器、SSM、docker、crontab、文件同步。
+- `createValidator`、`delegate`、`undelegate`、`claim`、`cast send`。
+- 任何私钥、keystore、password.txt、BLS private key 读取。

@@ -1,5 +1,6 @@
 # Runtime data (contains agent configs, credentials, conversation history)
 agent-server/data/
+agent-server/config/app.yaml
 
 # Dependencies
 agent-ui/node_modules/
@@ -22,3 +23,9 @@ tmp/
 # IDE
 .vscode/
 .idea/
+
+# Build artifacts
+*.exe
+*~
+__pycache__/
+*.pyc

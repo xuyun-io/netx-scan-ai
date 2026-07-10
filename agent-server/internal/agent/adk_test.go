@@ -31,7 +31,7 @@ func TestADKSkillSourceLoadsBundledSkills(t *testing.T) {
 }
 
 func TestServiceInitializesADKSkillTools(t *testing.T) {
-	service := NewService(store.New(t.TempDir()))
+	service := NewService(store.New(t.TempDir()), "", "")
 	if service.skillToolset == nil {
 		t.Fatal("skill toolset is nil")
 	}
@@ -57,11 +57,11 @@ func TestProcessTurnUsesADKModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := fileStore.CreateConversation(ctx, space.ID, "test")
+	conversation, err := fileStore.CreateConversation(ctx, space.Name, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(fileStore)
+	service := NewService(fileStore, "", "")
 	var capturedEnv model.EnvVars
 	service.modelFactory = func(_ context.Context, _ model.LLMConfig, env model.EnvVars) (adkmodel.LLM, error) {
 		capturedEnv = env
@@ -70,7 +70,7 @@ func TestProcessTurnUsesADKModel(t *testing.T) {
 	turn := model.Turn{
 		ID:             store.NewTurnID(),
 		ConversationID: conversation.ID,
-		AgentSpaceID:   space.ID,
+		AgentSpaceName: space.Name,
 		Status:         model.StatusInProgress,
 		Prompt:         "test",
 		CreatedAt:      conversation.CreatedAt,
@@ -82,7 +82,7 @@ func TestProcessTurnUsesADKModel(t *testing.T) {
 
 	service.processTurn(turn)
 
-	updated, err := fileStore.GetTurn(ctx, space.ID, conversation.ID, turn.ID)
+	updated, err := fileStore.GetTurn(ctx, space.Name, conversation.ID, turn.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestProcessTurnUsesADKModel(t *testing.T) {
 		t.Fatalf("model env CHAIN287_RPC_URL = %q", capturedEnv["CHAIN287_RPC_URL"])
 	}
 
-	records, err := fileStore.ListRecords(ctx, space.ID, "", conversation.ID, turn.ID)
+	records, err := fileStore.ListRecords(ctx, space.Name, "", conversation.ID, turn.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

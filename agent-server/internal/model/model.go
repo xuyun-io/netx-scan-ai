@@ -9,6 +9,7 @@ const (
 	StatusCompleted     = "COMPLETED"
 	StatusSuccess       = "SUCCESS"
 	StatusFailed        = "FAILED"
+	StatusCancelled     = "CANCELLED"
 	StatusInactive      = "INACTIVE"
 	StatusActive        = "ACTIVE"
 
@@ -22,12 +23,24 @@ const (
 	RecordStatus       = "STATUS"
 	RecordError        = "ERROR"
 
-	TaskSourceChat   = "chat"
-	TaskSourceManual = "manual"
+	TaskSourceChat               = "chat"
+	TaskSourceManual             = "manual"
+	TaskSourceAutomationOnce     = "automation_once"
+	TaskSourceAutomationSchedule = "automation_schedule"
+	TaskSourceAutomationEvent    = "automation_event"
+
+	AutomationTriggerSchedule = "schedule"
+
+	AutomationFrequencyHourly  = "hourly"
+	AutomationFrequencyDaily   = "daily"
+	AutomationFrequencyWeekly  = "weekly"
+	AutomationFrequencyMonthly = "monthly"
+
+	AutomationStatusActive   = "ACTIVE"
+	AutomationStatusDisabled = "DISABLED"
 )
 
 type AgentSpace struct {
-	ID           string       `json:"agentSpaceId" yaml:"agentSpaceId"`
 	Name         string       `json:"name" yaml:"name"`
 	Description  string       `json:"description,omitempty" yaml:"description,omitempty"`
 	LLM          LLMConfig    `json:"llm" yaml:"llm"`
@@ -57,7 +70,7 @@ type WeComConfig struct {
 
 type Conversation struct {
 	ID           string    `json:"conversationId" yaml:"conversationId"`
-	AgentSpaceID string    `json:"agentSpaceId" yaml:"agentSpaceId"`
+	AgentSpaceName string    `json:"agentSpaceName" yaml:"agentSpaceName"`
 	Title        string    `json:"title" yaml:"title"`
 	Summary      string    `json:"summary,omitempty" yaml:"summary,omitempty"`
 	CreatedAt    time.Time `json:"createdAt" yaml:"createdAt"`
@@ -72,7 +85,7 @@ type TurnOutput struct {
 type Turn struct {
 	ID                   string      `json:"turnId" yaml:"turnId"`
 	ConversationID       string      `json:"conversationId" yaml:"conversationId"`
-	AgentSpaceID         string      `json:"agentSpaceId" yaml:"agentSpaceId"`
+	AgentSpaceName         string      `json:"agentSpaceName" yaml:"agentSpaceName"`
 	Status               string      `json:"status" yaml:"status"`
 	StatusReason         string      `json:"statusReason,omitempty" yaml:"statusReason,omitempty"`
 	Prompt               string      `json:"prompt" yaml:"prompt"`
@@ -87,7 +100,7 @@ type Turn struct {
 
 type Task struct {
 	ID               string            `json:"taskId" yaml:"taskId"`
-	AgentSpaceID     string            `json:"agentSpaceId" yaml:"agentSpaceId"`
+	AgentSpaceName     string            `json:"agentSpaceName" yaml:"agentSpaceName"`
 	ConversationID   string            `json:"conversationId,omitempty" yaml:"conversationId,omitempty"`
 	TurnID           string            `json:"turnId,omitempty" yaml:"turnId,omitempty"`
 	Name             string            `json:"name" yaml:"name"`
@@ -111,9 +124,36 @@ type Task struct {
 	CompletedAt      *time.Time        `json:"completedAt,omitempty" yaml:"completedAt,omitempty"`
 }
 
+type Automation struct {
+	ID              string             `json:"automationId" yaml:"automationId"`
+	AgentSpaceName    string             `json:"agentSpaceName" yaml:"agentSpaceName"`
+	Name            string             `json:"name" yaml:"name"`
+	Description     string             `json:"description,omitempty" yaml:"description,omitempty"`
+	Instruction     string             `json:"instruction" yaml:"instruction"`
+	TriggerType     string             `json:"triggerType" yaml:"triggerType"`
+	Status          string             `json:"status" yaml:"status"`
+	Enabled         bool               `json:"enabled" yaml:"enabled"`
+	Schedule        AutomationSchedule `json:"schedule" yaml:"schedule"`
+	LastTriggeredAt *time.Time         `json:"lastTriggeredAt,omitempty" yaml:"lastTriggeredAt,omitempty"`
+	CreatedAt       time.Time          `json:"createdAt" yaml:"createdAt"`
+	UpdatedAt       time.Time          `json:"updatedAt" yaml:"updatedAt"`
+}
+
+type AutomationSchedule struct {
+	Frequency  string `json:"frequency" yaml:"frequency"`
+	Interval   int    `json:"interval" yaml:"interval"`
+	Minute     int    `json:"minute" yaml:"minute"`
+	Hour       int    `json:"hour" yaml:"hour"`
+	DayOfWeek  int    `json:"dayOfWeek,omitempty" yaml:"dayOfWeek,omitempty"`
+	DayOfMonth int    `json:"dayOfMonth,omitempty" yaml:"dayOfMonth,omitempty"`
+	Timezone   string `json:"timezone" yaml:"timezone"`
+	Cron       string `json:"cron" yaml:"cron"`
+	Summary    string `json:"summary" yaml:"summary"`
+}
+
 type Record struct {
 	ID             string          `json:"recordId" yaml:"recordId"`
-	AgentSpaceID   string          `json:"agentSpaceId" yaml:"agentSpaceId"`
+	AgentSpaceName   string          `json:"agentSpaceName" yaml:"agentSpaceName"`
 	TaskID         string          `json:"taskId,omitempty" yaml:"taskId,omitempty"`
 	ConversationID string          `json:"conversationId,omitempty" yaml:"conversationId,omitempty"`
 	TurnID         string          `json:"turnId,omitempty" yaml:"turnId,omitempty"`
@@ -173,18 +213,19 @@ type RecordArtifact struct {
 
 type Artifact struct {
 	ID           string    `json:"artifactId" yaml:"artifactId"`
-	AgentSpaceID string    `json:"agentSpaceId" yaml:"agentSpaceId"`
+	AgentSpaceName string    `json:"agentSpaceName" yaml:"agentSpaceName"`
 	TaskID       string    `json:"taskId,omitempty" yaml:"taskId,omitempty"`
 	Name         string    `json:"name" yaml:"name"`
 	Type         string    `json:"type" yaml:"type"`
 	Size         int64     `json:"size" yaml:"size"`
+	Version      int64     `json:"version,omitempty" yaml:"version,omitempty"`
 	Path         string    `json:"path" yaml:"path"`
 	CreatedAt    time.Time `json:"createdAt" yaml:"createdAt"`
 }
 
 type Document struct {
 	ID           string     `json:"documentId" yaml:"documentId"`
-	AgentSpaceID string     `json:"agentSpaceId" yaml:"agentSpaceId"`
+	AgentSpaceName string     `json:"agentSpaceName" yaml:"agentSpaceName"`
 	Name         string     `json:"name" yaml:"name"`
 	ContentType  string     `json:"contentType,omitempty" yaml:"contentType,omitempty"`
 	Size         int64      `json:"size" yaml:"size"`

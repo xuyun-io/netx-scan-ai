@@ -35,7 +35,7 @@ func NewADKChainAgent(ctx context.Context, model adkmodel.LLM, rootDir string, r
 	return NewADKChainAgentWithEnv(ctx, model, rootDir, runner, nil)
 }
 
-func NewADKChainAgentWithEnv(ctx context.Context, model adkmodel.LLM, rootDir string, runner *skills.Runner, env appmodel.EnvVars) (ADKAgent, error) {
+func NewADKChainAgentWithEnv(ctx context.Context, model adkmodel.LLM, rootDir string, runner *skills.Runner, env appmodel.EnvVars, extraTools ...adktool.Tool) (ADKAgent, error) {
 	if runner == nil {
 		runner = skills.NewRunner(skills.Config{RootDir: rootDir})
 	}
@@ -50,12 +50,14 @@ func NewADKChainAgentWithEnv(ctx context.Context, model adkmodel.LLM, rootDir st
 	if err != nil {
 		return nil, err
 	}
+	tools := []adktool.Tool{executeActionTool}
+	tools = append(tools, extraTools...)
 	return llmagent.New(llmagent.Config{
 		Name:        "netx_chain287_agent",
 		Model:       model,
 		Description: "NetX Chain287 SRE agent that can use hot-loaded Agent Skills for read-only on-chain queries.",
-		Instruction: "You are the NetX Chain287 SRE agent. For Chain287 on-chain queries, first inspect available skills, load the relevant skill instructions, then call execute_skill_action with a declared action from tools.yaml.\n\nWhen a tool returns, its result contains a structured 'output' envelope: {version, status, message, data, error, metadata}. Prefer the 'message' field when answering the user. If status is 'error', clearly explain the failure using the 'error.code' and 'error.detail' fields. Use 'data' for precise facts (numbers, addresses, lists). Keep chain query answers concise and preserve raw tool output for records.",
-		Tools:       []adktool.Tool{executeActionTool},
+		Instruction: "You are the NetX Chain287 SRE agent. For Chain287 on-chain and validator operations, stay read-only by default: never send transactions, import private keys, unlock accounts, mutate files, restart nodes, or run SSM/docker commands unless a separate approved workflow explicitly exists.\n\nFor Chain287 queries, first inspect available skills, load the relevant skill instructions, then call execute_skill_action with a declared action from tools.yaml. If the user asks what they can ask, asks for common commands, or seems new to the chain, load chain287-chain-query and call command_catalog before suggesting next prompts.\n\nWhen a tool returns, its result contains a structured 'output' envelope: {version, status, message, data, error, display, artifacts, metadata}. Prefer the 'message' field when answering the user. If status is 'error', clearly explain the failure using the 'error.code' and 'error.detail' fields. Use 'data' for precise facts (numbers, addresses, lists), and summarize tables in Chinese when useful. Keep chain query answers concise and preserve raw tool output for records.\n\nIf send_wecom_message is available, it sends to the Enterprise WeChat group configured by the host. Never ask for, reveal, or include webhook URLs. Use it only for user-requested notifications or important task/automation updates, and keep the message concise.\n\nSkill-declared artifacts are persisted by the host automatically. For concise model-generated text reports, use save_artifact_text. Do not paste large file contents into the final answer. Use list_artifacts and load_artifact_preview when you need to refer to saved artifacts.",
+		Tools:       tools,
 		Toolsets:    []adktool.Toolset{skillToolset},
 	})
 }

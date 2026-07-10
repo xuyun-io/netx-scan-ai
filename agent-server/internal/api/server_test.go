@@ -14,7 +14,7 @@ import (
 
 func TestCreateAgentSpaceAndTaskAPI(t *testing.T) {
 	fileStore := store.New(t.TempDir())
-	handler := New(fileStore, agent.NewService(fileStore), "").Handler()
+	handler := New(fileStore, agent.NewService(fileStore, "", ""), "").Handler()
 
 	spaceResp := post(t, handler, "/api/v1/createAgentSpace", map[string]any{
 		"name": "test",
@@ -37,22 +37,33 @@ func TestCreateAgentSpaceAndTaskAPI(t *testing.T) {
 	}
 
 	taskResp := post(t, handler, "/api/v1/createTask", map[string]any{
-		"agentSpaceId":     spaceBody.Entity.ID,
+		"agentSpaceName": spaceBody.Entity.Name,
 		"instruction":      "生成 validator 巡检报告",
+		"source":           model.TaskSourceAutomationOnce,
+		"automationId":     "automation-1",
 		"requiresApproval": true,
 		"preAuthorized":    false,
 	})
 	if taskResp.Code != http.StatusAccepted {
 		t.Fatalf("createTask status = %d body=%s", taskResp.Code, taskResp.Body.String())
 	}
+	var taskBody struct {
+		Entity model.Task `json:"entity"`
+	}
+	if err := json.Unmarshal(taskResp.Body.Bytes(), &taskBody); err != nil {
+		t.Fatal(err)
+	}
+	if taskBody.Entity.Source != model.TaskSourceAutomationOnce || taskBody.Entity.AutomationID != "automation-1" {
+		t.Fatalf("task source/id = %s/%s", taskBody.Entity.Source, taskBody.Entity.AutomationID)
+	}
 }
 
 func TestUpdateAgentSpaceAPI(t *testing.T) {
 	fileStore := store.New(t.TempDir())
-	handler := New(fileStore, agent.NewService(fileStore), "").Handler()
+	handler := New(fileStore, agent.NewService(fileStore, "", ""), "").Handler()
 
 	createResp := post(t, handler, "/api/v1/createAgentSpace", map[string]any{
-		"name": "test",
+		"name": "test2",
 		"environment": map[string]string{
 			"OLD_KEY": "old-value",
 		},
@@ -68,7 +79,7 @@ func TestUpdateAgentSpaceAPI(t *testing.T) {
 	}
 
 	updateResp := post(t, handler, "/api/v1/updateAgentSpace", map[string]any{
-		"agentSpaceId": createBody.Entity.ID,
+		"name": createBody.Entity.Name,
 		"environment": map[string]string{
 			"NEW_KEY": "new-value",
 		},
@@ -92,10 +103,10 @@ func TestUpdateAgentSpaceAPI(t *testing.T) {
 
 func TestCreateAgentSpaceRejectsInvalidEnvironmentKey(t *testing.T) {
 	fileStore := store.New(t.TempDir())
-	handler := New(fileStore, agent.NewService(fileStore), "").Handler()
+	handler := New(fileStore, agent.NewService(fileStore, "", ""), "").Handler()
 
 	resp := post(t, handler, "/api/v1/createAgentSpace", map[string]any{
-		"name": "test",
+		"name": "test3",
 		"environment": map[string]string{
 			"BAD-KEY": "value",
 		},
@@ -108,18 +119,18 @@ func TestCreateAgentSpaceRejectsInvalidEnvironmentKey(t *testing.T) {
 func TestTurnAndRecordAPIUseFinOpsRoots(t *testing.T) {
 	ctx := t.Context()
 	fileStore := store.New(t.TempDir())
-	handler := New(fileStore, agent.NewService(fileStore), "").Handler()
+	handler := New(fileStore, agent.NewService(fileStore, "", ""), "").Handler()
 	space, err := fileStore.CreateAgentSpace(ctx, model.AgentSpace{Name: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversation, err := fileStore.CreateConversation(ctx, space.ID, "test")
+	conversation, err := fileStore.CreateConversation(ctx, space.Name, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	turn := model.Turn{
 		ID:             store.NewTurnID(),
-		AgentSpaceID:   space.ID,
+		AgentSpaceName: space.Name,
 		ConversationID: conversation.ID,
 		Status:         model.StatusSuccess,
 		Prompt:         "hello",
@@ -132,7 +143,7 @@ func TestTurnAndRecordAPIUseFinOpsRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := fileStore.AppendConversationRecord(ctx, model.Record{
-		AgentSpaceID:   space.ID,
+		AgentSpaceName: space.Name,
 		ConversationID: conversation.ID,
 		TurnID:         turn.ID,
 		Type:           model.RecordResponse,
@@ -142,7 +153,7 @@ func TestTurnAndRecordAPIUseFinOpsRoots(t *testing.T) {
 	}
 
 	turnResp := post(t, handler, "/api/v1/getTurn", map[string]any{
-		"agentSpaceId":   space.ID,
+		"agentSpaceName": space.Name,
 		"conversationId": conversation.ID,
 		"turnId":         turn.ID,
 	})
@@ -160,7 +171,7 @@ func TestTurnAndRecordAPIUseFinOpsRoots(t *testing.T) {
 	}
 
 	recordsResp := post(t, handler, "/api/v1/listRecords", map[string]any{
-		"agentSpaceId":   space.ID,
+		"agentSpaceName": space.Name,
 		"conversationId": conversation.ID,
 		"turnId":         turn.ID,
 	})

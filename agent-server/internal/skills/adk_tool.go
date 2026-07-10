@@ -19,17 +19,18 @@ type ExecuteActionInput struct {
 }
 
 type ExecuteActionOutput struct {
-	Skill          string        `json:"skill"`
-	Action         string        `json:"action"`
-	Description    string        `json:"description,omitempty"`
-	Command        string        `json:"command,omitempty"`
-	ReadOnly       bool          `json:"readonly"`
-	Approval       bool          `json:"approval"`
-	Output         *SkillOutput  `json:"output,omitempty"`
-	Stdout         string        `json:"stdout,omitempty"`
-	Stderr         string        `json:"stderr,omitempty"`
-	ExitCode       int           `json:"exitCode"`
-	DurationMillis int64         `json:"durationMillis"`
+	Skill          string              `json:"skill"`
+	Action         string              `json:"action"`
+	Description    string              `json:"description,omitempty"`
+	Command        string              `json:"command,omitempty"`
+	ReadOnly       bool                `json:"readonly"`
+	Approval       bool                `json:"approval"`
+	Output         *SkillOutput        `json:"output,omitempty"`
+	Artifacts      []ArtifactCandidate `json:"artifacts,omitempty"`
+	Stdout         string              `json:"stdout,omitempty"`
+	Stderr         string              `json:"stderr,omitempty"`
+	ExitCode       int                 `json:"exitCode"`
+	DurationMillis int64               `json:"durationMillis"`
 }
 
 func NewExecuteActionTool(runner *Runner) (tool.Tool, error) {
@@ -88,6 +89,7 @@ func ExecuteActionOutputFromResult(result ActionResult) ExecuteActionOutput {
 		ReadOnly:       result.ReadOnly,
 		Approval:       result.Approval,
 		Output:         result.Output,
+		Artifacts:      result.Artifacts,
 		Stdout:         result.Stdout,
 		Stderr:         result.Stderr,
 		ExitCode:       result.ExitCode,

@@ -1,34 +1,58 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/agent"
+	automationsvc "gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/automation"
+	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/config"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/model"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/store"
+	"go.uber.org/zap"
 )
 
 type Server struct {
 	store      *store.Store
 	agent      *agent.Service
+	automation *automationsvc.Service
 	webDist    string
 	enableCORS bool
+	cfg        *config.Config
 }
 
-func New(store *store.Store, agentService *agent.Service, webDist string) *Server {
+func New(store *store.Store, agentService *agent.Service, webDist string, automationServices ...*automationsvc.Service) *Server {
+	return NewWithConfig(store, agentService, webDist, nil, automationServices...)
+}
+
+func NewWithConfig(store *store.Store, agentService *agent.Service, webDist string, cfg *config.Config, automationServices ...*automationsvc.Service) *Server {
+	var automationService *automationsvc.Service
+	if len(automationServices) > 0 {
+		automationService = automationServices[0]
+	}
+	if automationService == nil {
+		automationService = automationsvc.NewService(store, agentService)
+	}
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
 	return &Server{
 		store:      store,
 		agent:      agentService,
+		automation: automationService,
 		webDist:    webDist,
 		enableCORS: true,
+		cfg:        cfg,
 	}
 }
 
@@ -51,14 +75,23 @@ func (s *Server) Handler() http.Handler {
 		"/api/v1/listTasks":          s.listTasks,
 		"/api/v1/deleteTask":         s.deleteTask,
 		"/api/v1/respondToTask":      s.respondToTask,
+		"/api/v1/cancelTask":         s.cancelTask,
+		"/api/v1/createAutomation":   s.createAutomation,
+		"/api/v1/listAutomations":    s.listAutomations,
+		"/api/v1/getAutomation":      s.getAutomation,
+		"/api/v1/updateAutomation":   s.updateAutomation,
+		"/api/v1/deleteAutomation":   s.deleteAutomation,
+		"/api/v1/triggerAutomation":  s.triggerAutomation,
 		"/api/v1/listRecords":        s.listRecords,
 		"/api/v1/listArtifacts":      s.listArtifacts,
 		"/api/v1/getArtifact":        s.getArtifact,
+		"/api/v1/deleteArtifact":     s.deleteArtifact,
 		"/api/v1/createDocument":     s.createDocument,
 		"/api/v1/listDocuments":      s.listDocuments,
 		"/api/v1/getDocument":        s.getDocument,
 		"/api/v1/deleteDocument":     s.deleteDocument,
 		"/api/v1/healthz":            s.healthz,
+		"/api/v1/login":              s.login,
 	} {
 		mux.Handle(path, s.postOnly(handler))
 	}
@@ -68,6 +101,11 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		requestID := requestIDFromHeader(r)
+		lrw := &loggingResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		w = lrw
+		w.Header().Set("X-Request-Id", requestID)
 		if s.enableCORS {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Headers", "content-type, authorization")
@@ -75,10 +113,97 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
+			logHTTPRequest(r, requestID, start, lrw)
 			return
 		}
+		if s.cfg.AuthEnabled() && strings.HasPrefix(r.URL.Path, "/api/v1/") && r.URL.Path != "/api/v1/login" {
+			if !s.authenticate(r) {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+				logHTTPRequest(r, requestID, start, lrw)
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
+		logHTTPRequest(r, requestID, start, lrw)
 	})
+}
+
+func (s *Server) authenticate(r *http.Request) bool {
+	header := r.Header.Get("Authorization")
+	const prefix = "Basic "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(header[len(prefix):])
+	if err != nil {
+		return false
+	}
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	return s.cfg.ValidateCredentials(parts[0], parts[1])
+}
+
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	status      int
+	bytes       int
+	wroteHeader bool
+}
+
+func (w *loggingResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *loggingResponseWriter) Write(data []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(data)
+	w.bytes += n
+	return n, err
+}
+
+func logHTTPRequest(r *http.Request, requestID string, start time.Time, lrw *loggingResponseWriter) {
+	fields := []zap.Field{
+		zap.String("request_id", requestID),
+		zap.String("method", r.Method),
+		zap.String("path", r.URL.Path),
+		zap.Int("status", lrw.status),
+		zap.Int("bytes", lrw.bytes),
+		zap.Duration("duration", time.Since(start)),
+		zap.String("remote_addr", r.RemoteAddr),
+		zap.String("user_agent", r.UserAgent()),
+	}
+	if lrw.status >= http.StatusInternalServerError {
+		zap.L().Error("http request completed", fields...)
+		return
+	}
+	if lrw.status >= http.StatusBadRequest {
+		zap.L().Warn("http request completed", fields...)
+		return
+	}
+	if r.URL.Path == "/api/v1/healthz" {
+		zap.L().Debug("http request completed", fields...)
+		return
+	}
+	zap.L().Info("http request completed", fields...)
+}
+
+func requestIDFromHeader(r *http.Request) string {
+	for _, header := range []string{"X-Request-Id", "X-Correlation-Id"} {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+			return value
+		}
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
 func (s *Server) postOnly(next http.HandlerFunc) http.HandlerFunc {
@@ -97,6 +222,18 @@ func (s *Server) postOnly(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.AuthEnabled() {
+		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "authEnabled": false})
+		return
+	}
+	if !s.authenticate(r) {
+		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "authEnabled": true})
 }
 
 func (s *Server) createAgentSpace(w http.ResponseWriter, r *http.Request) {
@@ -133,11 +270,11 @@ func (s *Server) listAgentSpaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getAgentSpace(w http.ResponseWriter, r *http.Request) {
-	var req agentSpaceIDRequest
+	var req agentSpaceNameRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	space, err := s.store.GetAgentSpace(r.Context(), req.AgentSpaceID)
+	space, err := s.store.GetAgentSpace(r.Context(), req.AgentSpaceName)
 	if err != nil {
 		writeNotFoundOrError(w, err)
 		return
@@ -156,7 +293,6 @@ func (s *Server) updateAgentSpace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	space, err := s.store.UpdateAgentSpace(r.Context(), model.AgentSpace{
-		ID:           req.AgentSpaceID,
 		Name:         req.Name,
 		Description:  req.Description,
 		LLM:          req.LLM,
@@ -171,15 +307,15 @@ func (s *Server) updateAgentSpace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteAgentSpace(w http.ResponseWriter, r *http.Request) {
-	var req agentSpaceIDRequest
+	var req agentSpaceNameRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.store.DeleteAgentSpace(r.Context(), req.AgentSpaceID); err != nil {
+	if err := s.store.DeleteAgentSpace(r.Context(), req.AgentSpaceName); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, entity(map[string]string{"agentSpaceId": req.AgentSpaceID}))
+	writeJSON(w, http.StatusOK, entity(map[string]string{"agentSpaceName": req.AgentSpaceName}))
 }
 
 func (s *Server) createConversation(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +323,7 @@ func (s *Server) createConversation(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	conv, err := s.store.CreateConversation(r.Context(), req.AgentSpaceID, req.Title)
+	conv, err := s.store.CreateConversation(r.Context(), req.AgentSpaceName, req.Title)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -200,7 +336,7 @@ func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	conversations, err := s.store.ListConversations(r.Context(), req.AgentSpaceID)
+	conversations, err := s.store.ListConversations(r.Context(), req.AgentSpaceName)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -213,12 +349,12 @@ func (s *Server) getConversation(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	conv, err := s.store.GetConversation(r.Context(), req.AgentSpaceID, req.ConversationID)
+	conv, err := s.store.GetConversation(r.Context(), req.AgentSpaceName, req.ConversationID)
 	if err != nil {
 		writeNotFoundOrError(w, err)
 		return
 	}
-	turns, _ := s.store.ListTurns(r.Context(), req.AgentSpaceID, req.ConversationID)
+	turns, _ := s.store.ListTurns(r.Context(), req.AgentSpaceName, req.ConversationID)
 	writeJSON(w, http.StatusOK, map[string]any{"entity": conv, "turns": turns})
 }
 
@@ -227,7 +363,7 @@ func (s *Server) deleteConversation(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.store.DeleteConversation(r.Context(), req.AgentSpaceID, req.ConversationID); err != nil {
+	if err := s.store.DeleteConversation(r.Context(), req.AgentSpaceName, req.ConversationID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -239,7 +375,7 @@ func (s *Server) createTurn(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	turn, err := s.agent.CreateTurn(r.Context(), req.AgentSpaceID, req.ConversationID, req.Prompt)
+	turn, err := s.agent.CreateTurn(r.Context(), req.AgentSpaceName, req.ConversationID, req.Prompt)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -252,7 +388,7 @@ func (s *Server) getTurn(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	turn, err := s.store.GetTurn(r.Context(), req.AgentSpaceID, req.ConversationID, req.TurnID)
+	turn, err := s.store.GetTurn(r.Context(), req.AgentSpaceName, req.ConversationID, req.TurnID)
 	if err != nil {
 		writeNotFoundOrError(w, err)
 		return
@@ -266,12 +402,13 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, err := s.agent.CreateTask(r.Context(), model.Task{
-		AgentSpaceID:     req.AgentSpaceID,
+		AgentSpaceName:   req.AgentSpaceName,
 		Name:             req.Name,
 		Description:      req.Description,
 		Priority:         req.Priority,
 		Type:             req.Type,
-		Source:           model.TaskSourceManual,
+		Source:           req.Source,
+		AutomationID:     req.AutomationID,
 		Instruction:      req.Instruction,
 		Input:            req.Input,
 		RequiresApproval: req.RequiresApproval,
@@ -289,7 +426,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	task, err := s.store.GetTask(r.Context(), req.AgentSpaceID, req.TaskID)
+	task, err := s.store.GetTask(r.Context(), req.AgentSpaceName, req.TaskID)
 	if err != nil {
 		writeNotFoundOrError(w, err)
 		return
@@ -302,7 +439,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	tasks, err := s.store.ListTasks(r.Context(), req.AgentSpaceID)
+	tasks, err := s.store.ListTasks(r.Context(), req.AgentSpaceName)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -315,7 +452,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := s.store.DeleteTask(r.Context(), req.AgentSpaceID, req.TaskID); err != nil {
+	if err := s.store.DeleteTask(r.Context(), req.AgentSpaceName, req.TaskID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -327,7 +464,7 @@ func (s *Server) respondToTask(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	task, err := s.agent.RespondToTask(r.Context(), req.AgentSpaceID, req.TaskID, req.Response, req.UserID)
+	task, err := s.agent.RespondToTask(r.Context(), req.AgentSpaceName, req.TaskID, req.Response, req.UserID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -335,12 +472,116 @@ func (s *Server) respondToTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, entity(task))
 }
 
+func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request) {
+	var req taskIDRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	task, err := s.agent.CancelTask(r.Context(), req.AgentSpaceName, req.TaskID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, entity(task))
+}
+
+func (s *Server) createAutomation(w http.ResponseWriter, r *http.Request) {
+	var req createAutomationRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	automation, err := s.automation.CreateAutomation(r.Context(), model.Automation{
+		AgentSpaceName: req.AgentSpaceName,
+		Name:           req.Name,
+		Description:    req.Description,
+		Instruction:    req.Instruction,
+		TriggerType:    model.AutomationTriggerSchedule,
+		Enabled:        true,
+		Schedule:       req.Schedule,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, entity(automation))
+}
+
+func (s *Server) listAutomations(w http.ResponseWriter, r *http.Request) {
+	var req listByAgentRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	automations, err := s.automation.ListAutomations(r.Context(), req.AgentSpaceName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, model.Page[model.Automation]{Entities: applyLimit(automations, req.MaxResults)})
+}
+
+func (s *Server) getAutomation(w http.ResponseWriter, r *http.Request) {
+	var req automationIDRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	automation, err := s.automation.GetAutomation(r.Context(), req.AgentSpaceName, req.AutomationID)
+	if err != nil {
+		writeNotFoundOrError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entity(automation))
+}
+
+func (s *Server) updateAutomation(w http.ResponseWriter, r *http.Request) {
+	var req updateAutomationRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	var automation model.Automation
+	var err error
+	if req.Enabled != nil {
+		automation, err = s.automation.SetEnabled(r.Context(), req.AgentSpaceName, req.AutomationID, *req.Enabled)
+	} else {
+		automation, err = s.automation.UpdateAutomation(r.Context(), req.AgentSpaceName, req.AutomationID, req.Name, req.Description, req.Instruction, req.Schedule)
+	}
+	if err != nil {
+		writeNotFoundOrError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entity(automation))
+}
+
+func (s *Server) deleteAutomation(w http.ResponseWriter, r *http.Request) {
+	var req automationIDRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.automation.DeleteAutomation(r.Context(), req.AgentSpaceName, req.AutomationID); err != nil {
+		writeNotFoundOrError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+func (s *Server) triggerAutomation(w http.ResponseWriter, r *http.Request) {
+	var req automationIDRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	task, err := s.automation.RunOnce(r.Context(), req.AgentSpaceName, req.AutomationID)
+	if err != nil {
+		writeNotFoundOrError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entity(task))
+}
+
 func (s *Server) listRecords(w http.ResponseWriter, r *http.Request) {
 	var req listRecordsRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	records, err := s.store.ListRecords(r.Context(), req.AgentSpaceID, req.TaskID, req.ConversationID, req.TurnID)
+	records, err := s.store.ListRecords(r.Context(), req.AgentSpaceName, req.TaskID, req.ConversationID, req.TurnID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -356,7 +597,7 @@ func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	artifacts, err := s.store.ListArtifacts(r.Context(), req.AgentSpaceID)
+	artifacts, err := s.store.ListArtifacts(r.Context(), req.AgentSpaceName)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -369,7 +610,7 @@ func (s *Server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	artifact, content, err := s.store.GetArtifact(r.Context(), req.AgentSpaceID, req.ArtifactID)
+	artifact, content, err := s.store.GetArtifact(r.Context(), req.AgentSpaceName, req.ArtifactID)
 	if err != nil {
 		writeNotFoundOrError(w, err)
 		return
@@ -380,12 +621,24 @@ func (s *Server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) deleteArtifact(w http.ResponseWriter, r *http.Request) {
+	var req artifactIDRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.store.DeleteArtifact(r.Context(), req.AgentSpaceName, req.ArtifactID); err != nil {
+		writeNotFoundOrError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entity(map[string]string{"artifactId": req.ArtifactID}))
+}
+
 func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 	var req createDocumentRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	doc, err := s.store.CreateDocument(r.Context(), req.AgentSpaceID, req.Name, req.ContentType, req.ContentBase64)
+	doc, err := s.store.CreateDocument(r.Context(), req.AgentSpaceName, req.Name, req.ContentType, req.ContentBase64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -398,7 +651,7 @@ func (s *Server) listDocuments(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	docs, err := s.store.ListDocuments(r.Context(), req.AgentSpaceID, req.IncludeInactive)
+	docs, err := s.store.ListDocuments(r.Context(), req.AgentSpaceName, req.IncludeInactive)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -411,7 +664,7 @@ func (s *Server) getDocument(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	doc, err := s.store.GetDocument(r.Context(), req.AgentSpaceID, req.DocumentID)
+	doc, err := s.store.GetDocument(r.Context(), req.AgentSpaceName, req.DocumentID)
 	if err != nil {
 		writeNotFoundOrError(w, err)
 		return
@@ -424,7 +677,7 @@ func (s *Server) deleteDocument(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	doc, err := s.store.DeleteDocument(r.Context(), req.AgentSpaceID, req.DocumentID)
+	doc, err := s.store.DeleteDocument(r.Context(), req.AgentSpaceName, req.DocumentID)
 	if err != nil {
 		writeNotFoundOrError(w, err)
 		return
@@ -465,7 +718,6 @@ type createAgentSpaceRequest struct {
 }
 
 type updateAgentSpaceRequest struct {
-	AgentSpaceID string             `json:"agentSpaceId"`
 	Name         string             `json:"name"`
 	Description  string             `json:"description"`
 	LLM          model.LLMConfig    `json:"llm"`
@@ -474,46 +726,48 @@ type updateAgentSpaceRequest struct {
 	ClientToken  string             `json:"clientToken"`
 }
 
-type agentSpaceIDRequest struct {
-	AgentSpaceID string `json:"agentSpaceId"`
+type agentSpaceNameRequest struct {
+	AgentSpaceName string `json:"agentSpaceName"`
 }
 
 type listByAgentRequest struct {
-	AgentSpaceID string `json:"agentSpaceId"`
-	MaxResults   int    `json:"maxResults"`
-	NextToken    string `json:"nextToken"`
+	AgentSpaceName string `json:"agentSpaceName"`
+	MaxResults     int    `json:"maxResults"`
+	NextToken      string `json:"nextToken"`
 }
 
 type createConversationRequest struct {
-	AgentSpaceID string `json:"agentSpaceId"`
-	Title        string `json:"title"`
-	ClientToken  string `json:"clientToken"`
+	AgentSpaceName string `json:"agentSpaceName"`
+	Title          string `json:"title"`
+	ClientToken    string `json:"clientToken"`
 }
 
 type conversationIDRequest struct {
-	AgentSpaceID   string `json:"agentSpaceId"`
+	AgentSpaceName string `json:"agentSpaceName"`
 	ConversationID string `json:"conversationId"`
 }
 
 type createTurnRequest struct {
-	AgentSpaceID   string `json:"agentSpaceId"`
+	AgentSpaceName string `json:"agentSpaceName"`
 	ConversationID string `json:"conversationId"`
 	Prompt         string `json:"prompt"`
 	ClientToken    string `json:"clientToken"`
 }
 
 type turnIDRequest struct {
-	AgentSpaceID   string `json:"agentSpaceId"`
+	AgentSpaceName string `json:"agentSpaceName"`
 	ConversationID string `json:"conversationId"`
 	TurnID         string `json:"turnId"`
 }
 
 type createTaskRequest struct {
-	AgentSpaceID     string            `json:"agentSpaceId"`
+	AgentSpaceName   string            `json:"agentSpaceName"`
 	Name             string            `json:"name"`
 	Description      string            `json:"description"`
 	Priority         string            `json:"priority"`
 	Type             string            `json:"type"`
+	Source           string            `json:"source"`
+	AutomationID     string            `json:"automationId"`
 	Instruction      string            `json:"instruction"`
 	Input            map[string]string `json:"input"`
 	RequiresApproval bool              `json:"requiresApproval"`
@@ -521,20 +775,44 @@ type createTaskRequest struct {
 	ClientToken      string            `json:"clientToken"`
 }
 
+type createAutomationRequest struct {
+	AgentSpaceName string                   `json:"agentSpaceName"`
+	Name           string                   `json:"name"`
+	Description    string                   `json:"description"`
+	Instruction    string                   `json:"instruction"`
+	Schedule       model.AutomationSchedule `json:"schedule"`
+	ClientToken    string                   `json:"clientToken"`
+}
+
+type automationIDRequest struct {
+	AgentSpaceName string `json:"agentSpaceName"`
+	AutomationID   string `json:"automationId"`
+}
+
+type updateAutomationRequest struct {
+	AgentSpaceName string                   `json:"agentSpaceName"`
+	AutomationID   string                   `json:"automationId"`
+	Enabled        *bool                    `json:"enabled"`
+	Name           string                   `json:"name"`
+	Description    string                   `json:"description"`
+	Instruction    string                   `json:"instruction"`
+	Schedule       model.AutomationSchedule `json:"schedule"`
+	ClientToken    string                   `json:"clientToken"`
+}
 type taskIDRequest struct {
-	AgentSpaceID string `json:"agentSpaceId"`
-	TaskID       string `json:"taskId"`
+	AgentSpaceName string `json:"agentSpaceName"`
+	TaskID         string `json:"taskId"`
 }
 
 type respondToTaskRequest struct {
-	AgentSpaceID string `json:"agentSpaceId"`
-	TaskID       string `json:"taskId"`
-	Response     string `json:"response"`
-	UserID       string `json:"userId"`
+	AgentSpaceName string `json:"agentSpaceName"`
+	TaskID         string `json:"taskId"`
+	Response       string `json:"response"`
+	UserID         string `json:"userId"`
 }
 
 type listRecordsRequest struct {
-	AgentSpaceID   string `json:"agentSpaceId"`
+	AgentSpaceName string `json:"agentSpaceName"`
 	TaskID         string `json:"taskId"`
 	ConversationID string `json:"conversationId"`
 	TurnID         string `json:"turnId"`
@@ -543,28 +821,28 @@ type listRecordsRequest struct {
 }
 
 type artifactIDRequest struct {
-	AgentSpaceID string `json:"agentSpaceId"`
-	ArtifactID   string `json:"artifactId"`
+	AgentSpaceName string `json:"agentSpaceName"`
+	ArtifactID     string `json:"artifactId"`
 }
 
 type createDocumentRequest struct {
-	AgentSpaceID  string `json:"agentSpaceId"`
-	Name          string `json:"name"`
-	ContentType   string `json:"contentType"`
-	ContentBase64 string `json:"contentBase64"`
-	ClientToken   string `json:"clientToken"`
+	AgentSpaceName string `json:"agentSpaceName"`
+	Name           string `json:"name"`
+	ContentType    string `json:"contentType"`
+	ContentBase64  string `json:"contentBase64"`
+	ClientToken    string `json:"clientToken"`
 }
 
 type listDocumentsRequest struct {
-	AgentSpaceID    string `json:"agentSpaceId"`
+	AgentSpaceName  string `json:"agentSpaceName"`
 	IncludeInactive bool   `json:"includeInactive"`
 	MaxResults      int    `json:"maxResults"`
 	NextToken       string `json:"nextToken"`
 }
 
 type documentIDRequest struct {
-	AgentSpaceID string `json:"agentSpaceId"`
-	DocumentID   string `json:"documentId"`
+	AgentSpaceName string `json:"agentSpaceName"`
+	DocumentID     string `json:"documentId"`
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dest any) bool {
@@ -586,7 +864,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
-		slog.Warn("write response", "error", err)
+		zap.L().Warn("write response failed", zap.Error(err))
 	}
 }
 
@@ -651,7 +929,40 @@ func validEnvKey(key string) bool {
 }
 
 func entity(value any) map[string]any {
+	switch v := value.(type) {
+	case model.AgentSpace:
+		return map[string]any{"entity": maskAgentSpace(v)}
+	case []model.AgentSpace:
+		return map[string]any{"entity": maskAgentSpaces(v)}
+	case model.Page[model.AgentSpace]:
+		v.Entities = maskAgentSpaces(v.Entities)
+		return map[string]any{"entity": v}
+	}
 	return map[string]any{"entity": value}
+}
+
+func maskAgentSpace(space model.AgentSpace) model.AgentSpace {
+	space.LLM.APIKey = maskAPIKey(space.LLM.APIKey)
+	return space
+}
+
+func maskAgentSpaces(spaces []model.AgentSpace) []model.AgentSpace {
+	result := make([]model.AgentSpace, len(spaces))
+	for i, space := range spaces {
+		result[i] = maskAgentSpace(space)
+	}
+	return result
+}
+
+func maskAPIKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 8 {
+		return "****"
+	}
+	return key[:4] + "****" + key[len(key)-4:]
 }
 
 func applyLimit[T any](values []T, maxResults int) []T {

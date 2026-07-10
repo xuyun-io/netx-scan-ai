@@ -1,0 +1,29 @@
+version: "1"
+actions:
+  sample_report:
+    description: Generate a realistic sample Chain287 SRE HTML inspection report artifact for Task and Artifact pipeline debugging.
+    readonly: true
+    approval: false
+    timeoutSeconds: 20
+    command: python3
+    args:
+      - scripts/render-report.py
+      - sample_report
+      - ""
+      - ${report_title}
+      - ${report_scope}
+      - ${report_notes}
+
+  render_report:
+    description: Render a professional Chain287 SRE HTML inspection report from collected skill output JSON.
+    readonly: true
+    approval: false
+    timeoutSeconds: 30
+    command: python3
+    args:
+      - scripts/render-report.py
+      - render_report
+      - ${report_json}
+      - ${report_title}
+      - ${report_scope}
+      - ${report_notes}

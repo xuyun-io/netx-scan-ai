@@ -3,14 +3,22 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/model"
+	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/notify"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/skills"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/store"
+	"go.uber.org/zap"
 	"google.golang.org/adk/v2/agent"
+	adkartifact "google.golang.org/adk/v2/artifact"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/adk/v2/runner"
@@ -20,29 +28,73 @@ import (
 )
 
 type Service struct {
-	store           *store.Store
-	skillRunner     *skills.Runner
-	skillToolset    *ADKSkillToolset
-	skillActionTool adktool.Tool
-	sessionService  adksession.Service
-	modelFactory    func(context.Context, model.LLMConfig, model.EnvVars) (adkmodel.LLM, error)
+	store              *store.Store
+	skillRunner        *skills.Runner
+	skillToolset       *ADKSkillToolset
+	skillActionTool    adktool.Tool
+	sessionService     adksession.Service
+	artifactService    adkartifact.Service
+	approvalNotifier   approvalNotifier
+	automationNotifier automationTaskNotifier
+	wecomClient        notify.WeComClient
+	modelFactory       func(context.Context, model.LLMConfig, model.EnvVars) (adkmodel.LLM, error)
+	taskCancels        map[string]context.CancelFunc
+	mu                 sync.Mutex
 }
 
-func NewService(store *store.Store) *Service {
-	runner := skills.NewRunner(skills.Config{})
+type approvalNotifier interface {
+	NotifyTaskAwaitingApproval(context.Context, model.AgentSpace, model.Task) (bool, error)
+}
+
+type automationTaskNotifier interface {
+	NotifyAutomationTaskFinished(context.Context, model.AgentSpace, model.Task) (bool, error)
+}
+
+func NewService(store *store.Store, publicURL, skillsDir string) *Service {
+	runner := skills.NewRunner(skills.Config{RootDir: skillsDir})
 	toolset, _ := NewADKSkillToolset(context.Background(), runner.RootDir())
 	actionTool, _ := skills.NewExecuteActionTool(runner)
+	wecomClient := notify.WeComClient{PublicURL: publicURL}
 	return &Service{
-		store:           store,
-		skillRunner:     runner,
-		skillToolset:    toolset,
-		skillActionTool: actionTool,
-		sessionService:  adksession.InMemoryService(),
-		modelFactory:    newGeminiModel,
+		store:              store,
+		skillRunner:        runner,
+		skillToolset:       toolset,
+		skillActionTool:    actionTool,
+		sessionService:     adksession.InMemoryService(),
+		artifactService:    newFileArtifactService(store.Root()),
+		approvalNotifier:   wecomClient,
+		automationNotifier: wecomClient,
+		wecomClient:        wecomClient,
+		modelFactory:       newGeminiModel,
 	}
 }
 
-func (s *Service) CreateTurn(ctx context.Context, agentSpaceID, conversationID, prompt string) (model.Turn, error) {
+func (s *Service) registerTaskCancel(taskID string, cancel context.CancelFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.taskCancels == nil {
+		s.taskCancels = make(map[string]context.CancelFunc)
+	}
+	s.taskCancels[taskID] = cancel
+}
+
+func (s *Service) unregisterTaskCancel(taskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.taskCancels, taskID)
+}
+
+func (s *Service) cancelTaskRun(taskID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cancel, ok := s.taskCancels[taskID]; ok {
+		cancel()
+		return true
+	}
+	return false
+}
+
+func (s *Service) CreateTurn(ctx context.Context, agentSpaceName, conversationID, prompt string) (model.Turn, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return model.Turn{}, fmt.Errorf("prompt is required")
@@ -54,7 +106,7 @@ func (s *Service) CreateTurn(ctx context.Context, agentSpaceID, conversationID, 
 	turn := model.Turn{
 		ID:             store.NewTurnID(),
 		ConversationID: conversationID,
-		AgentSpaceID:   agentSpaceID,
+		AgentSpaceName: agentSpaceName,
 		Status:         model.StatusInProgress,
 		Prompt:         prompt,
 		DocumentIDs:    []string{},
@@ -64,6 +116,12 @@ func (s *Service) CreateTurn(ctx context.Context, agentSpaceID, conversationID, 
 	if err := s.store.AppendTurn(ctx, turn); err != nil {
 		return model.Turn{}, err
 	}
+	zap.L().Info("turn created",
+		zap.String("agent_space", turn.AgentSpaceName),
+		zap.String("conversation_id", turn.ConversationID),
+		zap.String("turn_id", turn.ID),
+		zap.Int("prompt_chars", len([]rune(prompt))),
+	)
 	go s.processTurn(turn)
 	return turn, nil
 }
@@ -73,9 +131,14 @@ func (s *Service) CreateTask(ctx context.Context, task model.Task) (model.Task, 
 	if task.Instruction == "" {
 		return model.Task{}, fmt.Errorf("instruction is required")
 	}
-	if task.AgentSpaceID == "" {
-		return model.Task{}, fmt.Errorf("agentSpaceId is required")
+	if task.AgentSpaceName == "" {
+		return model.Task{}, fmt.Errorf("agentSpaceName is required")
 	}
+	source, err := normalizeTaskSource(task.Source)
+	if err != nil {
+		return model.Task{}, err
+	}
+	task.Source = source
 	task.RequiresApproval = task.RequiresApproval || requiresApproval(task.Instruction)
 	if task.RequiresApproval && !task.PreAuthorized {
 		task.Status = model.StatusAwaitingInput
@@ -87,21 +150,32 @@ func (s *Service) CreateTask(ctx context.Context, task model.Task) (model.Task, 
 		return model.Task{}, err
 	}
 	_ = s.store.AppendTaskRecord(ctx, model.Record{
-		ID:           store.NewRecordID(),
-		AgentSpaceID: created.AgentSpaceID,
-		TaskID:       created.ID,
-		Type:         model.RecordStatus,
-		Content:      fmt.Sprintf("任务已创建，当前状态：%s", created.Status),
-		CreatedAt:    time.Now().UTC(),
+		ID:             store.NewRecordID(),
+		AgentSpaceName: created.AgentSpaceName,
+		TaskID:         created.ID,
+		Type:           model.RecordStatus,
+		Content:        fmt.Sprintf("任务已创建，当前状态：%s", created.Status),
+		CreatedAt:      time.Now().UTC(),
 	})
 	if created.Status != model.StatusAwaitingInput {
-		go s.ExecuteTask(created.AgentSpaceID, created.ID)
+		go s.ExecuteTask(created.AgentSpaceName, created.ID)
+	} else {
+		s.notifyTaskAwaitingApproval(ctx, created)
 	}
+	zap.L().Info("task created",
+		zap.String("agent_space", created.AgentSpaceName),
+		zap.String("task_id", created.ID),
+		zap.String("source", created.Source),
+		zap.String("status", created.Status),
+		zap.String("automation_id", created.AutomationID),
+		zap.Bool("requires_approval", created.RequiresApproval),
+		zap.Bool("pre_authorized", created.PreAuthorized),
+	)
 	return created, nil
 }
 
-func (s *Service) RespondToTask(ctx context.Context, agentSpaceID, taskID, response, userID string) (model.Task, error) {
-	task, err := s.store.GetTask(ctx, agentSpaceID, taskID)
+func (s *Service) RespondToTask(ctx context.Context, agentSpaceName, taskID, response, userID string) (model.Task, error) {
+	task, err := s.store.GetTask(ctx, agentSpaceName, taskID)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -117,13 +191,18 @@ func (s *Service) RespondToTask(ctx context.Context, agentSpaceID, taskID, respo
 			return model.Task{}, err
 		}
 		_ = s.store.AppendTaskRecord(ctx, model.Record{
-			ID:           store.NewRecordID(),
-			AgentSpaceID: agentSpaceID,
-			TaskID:       taskID,
-			Type:         model.RecordStatus,
-			Content:      "审批已拒绝，任务结束。",
-			CreatedAt:    time.Now().UTC(),
+			ID:             store.NewRecordID(),
+			AgentSpaceName: agentSpaceName,
+			TaskID:         taskID,
+			Type:           model.RecordStatus,
+			Content:        "审批已拒绝，任务结束。",
+			CreatedAt:      time.Now().UTC(),
 		})
+		zap.L().Info("task approval rejected",
+			zap.String("agent_space", agentSpaceName),
+			zap.String("task_id", taskID),
+			zap.String("user_id", firstNonEmpty(userID, "web-ui")),
+		)
 		return task, nil
 	}
 	now := time.Now().UTC()
@@ -137,21 +216,147 @@ func (s *Service) RespondToTask(ctx context.Context, agentSpaceID, taskID, respo
 		return model.Task{}, err
 	}
 	_ = s.store.AppendTaskRecord(ctx, model.Record{
-		ID:           store.NewRecordID(),
-		AgentSpaceID: agentSpaceID,
-		TaskID:       taskID,
-		Type:         model.RecordStatus,
-		Content:      "审批已通过，任务继续执行。",
-		CreatedAt:    now,
+		ID:             store.NewRecordID(),
+		AgentSpaceName: agentSpaceName,
+		TaskID:         taskID,
+		Type:           model.RecordStatus,
+		Content:        "审批已通过，任务继续执行。",
+		CreatedAt:      now,
 	})
-	go s.ExecuteTask(agentSpaceID, taskID)
+	zap.L().Info("task approval accepted",
+		zap.String("agent_space", agentSpaceName),
+		zap.String("task_id", taskID),
+		zap.String("user_id", task.ApprovedBy),
+	)
+	go s.ExecuteTask(agentSpaceName, taskID)
 	return task, nil
 }
 
-func (s *Service) ExecuteTask(agentSpaceID, taskID string) {
-	ctx := context.Background()
-	task, err := s.store.GetTask(ctx, agentSpaceID, taskID)
+func (s *Service) CancelTask(ctx context.Context, agentSpaceName, taskID string) (model.Task, error) {
+	task, err := s.store.GetTask(ctx, agentSpaceName, taskID)
 	if err != nil {
+		return model.Task{}, err
+	}
+	if task.Status == model.StatusCompleted || task.Status == model.StatusSuccess || task.Status == model.StatusFailed || task.Status == model.StatusCancelled {
+		return model.Task{}, fmt.Errorf("task is already finished")
+	}
+	s.cancelTaskRun(taskID)
+	now := time.Now().UTC()
+	task.Status = model.StatusCancelled
+	task.CompletedAt = &now
+	task.UpdatedAt = now
+	if err := s.store.UpdateTask(ctx, task); err != nil {
+		return model.Task{}, err
+	}
+	_ = s.store.AppendTaskRecord(ctx, model.Record{
+		ID:             store.NewRecordID(),
+		AgentSpaceName: agentSpaceName,
+		TaskID:         taskID,
+		Type:           model.RecordStatus,
+		Content:        "任务已取消。",
+		CreatedAt:      now,
+	})
+	zap.L().Info("task cancelled", zap.String("agent_space", agentSpaceName), zap.String("task_id", taskID))
+	return task, nil
+}
+
+func (s *Service) notifyTaskAwaitingApproval(ctx context.Context, task model.Task) {
+	if s.approvalNotifier == nil {
+		return
+	}
+	space, err := s.store.GetAgentSpace(ctx, task.AgentSpaceName)
+	if err != nil {
+		zap.L().Warn("approval notification skipped: load agent space failed",
+			zap.String("agent_space", task.AgentSpaceName),
+			zap.String("task_id", task.ID),
+			zap.Error(err),
+		)
+		s.appendTaskStatus(ctx, task.AgentSpaceName, task.ID, fmt.Sprintf("企业微信审批通知未发送：读取 Agent 配置失败：%s", err))
+		return
+	}
+	sent, err := s.approvalNotifier.NotifyTaskAwaitingApproval(ctx, space, task)
+	if err != nil {
+		zap.L().Warn("approval notification failed",
+			zap.String("agent_space", task.AgentSpaceName),
+			zap.String("task_id", task.ID),
+			zap.Error(err),
+		)
+		s.appendTaskStatus(ctx, task.AgentSpaceName, task.ID, fmt.Sprintf("企业微信审批通知发送失败：%s", err))
+		return
+	}
+	if sent {
+		zap.L().Info("approval notification sent", zap.String("agent_space", task.AgentSpaceName), zap.String("task_id", task.ID))
+		s.appendTaskStatus(ctx, task.AgentSpaceName, task.ID, "企业微信审批通知已发送。")
+	}
+}
+
+func (s *Service) notifyAutomationTaskFinished(task model.Task) {
+	if s.automationNotifier == nil || !isAutomationTaskSource(task.Source) {
+		return
+	}
+	ctx := context.Background()
+	space, err := s.store.GetAgentSpace(ctx, task.AgentSpaceName)
+	if err != nil {
+		zap.L().Warn("automation notification skipped: load agent space failed",
+			zap.String("agent_space", task.AgentSpaceName),
+			zap.String("task_id", task.ID),
+			zap.String("source", task.Source),
+			zap.Error(err),
+		)
+		s.appendTaskStatus(ctx, task.AgentSpaceName, task.ID, fmt.Sprintf("企业微信自动化结果通知未发送：读取 Agent 配置失败：%s", err))
+		return
+	}
+	sent, err := s.automationNotifier.NotifyAutomationTaskFinished(ctx, space, task)
+	if err != nil {
+		zap.L().Warn("automation notification failed",
+			zap.String("agent_space", task.AgentSpaceName),
+			zap.String("task_id", task.ID),
+			zap.String("source", task.Source),
+			zap.String("status", task.Status),
+			zap.Error(err),
+		)
+		s.appendTaskStatus(ctx, task.AgentSpaceName, task.ID, fmt.Sprintf("企业微信自动化结果通知发送失败：%s", err))
+		return
+	}
+	if sent {
+		zap.L().Info("automation notification sent",
+			zap.String("agent_space", task.AgentSpaceName),
+			zap.String("task_id", task.ID),
+			zap.String("source", task.Source),
+			zap.String("status", task.Status),
+		)
+		s.appendTaskStatus(ctx, task.AgentSpaceName, task.ID, "企业微信自动化结果通知已发送。")
+	}
+}
+
+func isAutomationTaskSource(source string) bool {
+	switch source {
+	case model.TaskSourceAutomationOnce, model.TaskSourceAutomationSchedule, model.TaskSourceAutomationEvent:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) appendTaskStatus(ctx context.Context, agentSpaceName, taskID, content string) {
+	_ = s.store.AppendTaskRecord(ctx, model.Record{
+		ID:             store.NewRecordID(),
+		AgentSpaceName: agentSpaceName,
+		TaskID:         taskID,
+		Type:           model.RecordStatus,
+		Content:        content,
+		CreatedAt:      time.Now().UTC(),
+	})
+}
+
+func (s *Service) ExecuteTask(agentSpaceName, taskID string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.registerTaskCancel(taskID, cancel)
+	defer s.unregisterTaskCancel(taskID)
+
+	task, err := s.store.GetTask(ctx, agentSpaceName, taskID)
+	if err != nil {
+		zap.L().Warn("execute task skipped: load task failed", zap.String("agent_space", agentSpaceName), zap.String("task_id", taskID), zap.Error(err))
 		return
 	}
 	now := time.Now().UTC()
@@ -162,48 +367,84 @@ func (s *Service) ExecuteTask(agentSpaceID, taskID string) {
 		return
 	}
 	_ = s.store.AppendTaskRecord(ctx, model.Record{
-		ID:           store.NewRecordID(),
-		AgentSpaceID: agentSpaceID,
-		TaskID:       taskID,
-		Type:         model.RecordStatus,
-		Content:      "任务开始执行。",
-		CreatedAt:    now,
+		ID:             store.NewRecordID(),
+		AgentSpaceName: agentSpaceName,
+		TaskID:         taskID,
+		Type:           model.RecordStatus,
+		Content:        "任务开始执行。",
+		CreatedAt:      now,
 	})
+	zap.L().Info("task execution started",
+		zap.String("agent_space", agentSpaceName),
+		zap.String("task_id", taskID),
+		zap.String("source", task.Source),
+		zap.String("automation_id", task.AutomationID),
+	)
 	response, err := s.runADKTask(ctx, task)
 	if err != nil {
 		completedAt := time.Now().UTC()
-		task.Status = model.StatusFailed
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			task.Status = model.StatusCancelled
+			_ = s.store.AppendTaskRecord(ctx, model.Record{
+				ID:             store.NewRecordID(),
+				AgentSpaceName: agentSpaceName,
+				TaskID:         taskID,
+				Type:           model.RecordStatus,
+				Content:        "任务已取消。",
+				CreatedAt:      completedAt,
+			})
+		} else {
+			task.Status = model.StatusFailed
+			_ = s.store.AppendTaskRecord(ctx, model.Record{
+				ID:             store.NewRecordID(),
+				AgentSpaceName: agentSpaceName,
+				TaskID:         taskID,
+				Type:           model.RecordError,
+				Content:        err.Error(),
+				CreatedAt:      completedAt,
+			})
+		}
 		task.CompletedAt = &completedAt
 		task.Output = map[string]string{"error": err.Error()}
 		_ = s.store.UpdateTask(ctx, task)
-		_ = s.store.AppendTaskRecord(ctx, model.Record{
-			ID:           store.NewRecordID(),
-			AgentSpaceID: agentSpaceID,
-			TaskID:       taskID,
-			Type:         model.RecordError,
-			Content:      err.Error(),
-			CreatedAt:    completedAt,
-		})
-		s.updateLinkedTurn(ctx, task, err.Error(), model.StatusFailed, completedAt)
+		zap.L().Error("task execution finished with error",
+			zap.String("agent_space", agentSpaceName),
+			zap.String("task_id", taskID),
+			zap.String("status", task.Status),
+			zap.String("source", task.Source),
+			zap.Duration("duration", completedAt.Sub(now)),
+			zap.Error(err),
+		)
+		var turnStatus string
+		if task.Status == model.StatusCancelled {
+			turnStatus = model.StatusCancelled
+		} else {
+			turnStatus = model.StatusFailed
+		}
+		s.updateLinkedTurn(ctx, task, err.Error(), turnStatus, completedAt)
+		s.notifyAutomationTaskFinished(task)
 		return
+	}
+	if latest, err := s.store.GetTask(ctx, agentSpaceName, taskID); err == nil {
+		task = latest
 	}
 	result := renderADKTaskArtifact(task, response)
 	artifact, err := s.store.CreateArtifact(ctx, model.Artifact{
-		AgentSpaceID: agentSpaceID,
-		TaskID:       taskID,
-		Name:         fmt.Sprintf("%s-result.md", task.ID),
-		Type:         "Markdown",
+		AgentSpaceName: agentSpaceName,
+		TaskID:         taskID,
+		Name:           fmt.Sprintf("%s-result.md", task.ID),
+		Type:           "Markdown",
 	}, []byte(result))
 	if err == nil {
 		task.Artifacts = append(task.Artifacts, artifact.ID)
 	}
 	_ = s.store.AppendTaskRecord(ctx, model.Record{
-		ID:           store.NewRecordID(),
-		AgentSpaceID: agentSpaceID,
-		TaskID:       taskID,
-		Type:         model.RecordToolResult,
-		Content:      "已生成第一版 Markdown 执行结果 artifact。",
-		CreatedAt:    time.Now().UTC(),
+		ID:             store.NewRecordID(),
+		AgentSpaceName: agentSpaceName,
+		TaskID:         taskID,
+		Type:           model.RecordToolResult,
+		Content:        "已生成第一版 Markdown 执行结果 artifact。",
+		CreatedAt:      time.Now().UTC(),
 	})
 	completedAt := time.Now().UTC()
 	task.Status = model.StatusCompleted
@@ -213,20 +454,35 @@ func (s *Service) ExecuteTask(agentSpaceID, taskID string) {
 	}
 	_ = s.store.UpdateTask(ctx, task)
 	_ = s.store.AppendTaskRecord(ctx, model.Record{
-		ID:           store.NewRecordID(),
-		AgentSpaceID: agentSpaceID,
-		TaskID:       taskID,
-		Type:         model.RecordResponse,
-		Content:      task.Output["summary"],
-		CreatedAt:    completedAt,
+		ID:             store.NewRecordID(),
+		AgentSpaceName: agentSpaceName,
+		TaskID:         taskID,
+		Type:           model.RecordResponse,
+		Content:        task.Output["summary"],
+		CreatedAt:      completedAt,
 	})
 	if task.ConversationID != "" && task.TurnID != "" {
 		s.updateLinkedTurn(ctx, task, response, model.StatusSuccess, completedAt)
 	}
+	zap.L().Info("task execution completed",
+		zap.String("agent_space", agentSpaceName),
+		zap.String("task_id", taskID),
+		zap.String("source", task.Source),
+		zap.String("automation_id", task.AutomationID),
+		zap.Duration("duration", completedAt.Sub(now)),
+		zap.Int("artifacts", len(task.Artifacts)),
+	)
+	s.notifyAutomationTaskFinished(task)
 }
 
 func (s *Service) processTurn(turn model.Turn) {
 	ctx := context.Background()
+	startedAt := time.Now().UTC()
+	zap.L().Info("turn processing started",
+		zap.String("agent_space", turn.AgentSpaceName),
+		zap.String("conversation_id", turn.ConversationID),
+		zap.String("turn_id", turn.ID),
+	)
 	response, err := s.runADKTurn(ctx, turn)
 	completedAt := time.Now().UTC()
 	if err != nil {
@@ -238,13 +494,20 @@ func (s *Service) processTurn(turn model.Turn) {
 		_ = s.store.UpdateTurn(ctx, turn)
 		_ = s.store.AppendConversationRecord(ctx, model.Record{
 			ID:             store.NewRecordID(),
-			AgentSpaceID:   turn.AgentSpaceID,
+			AgentSpaceName: turn.AgentSpaceName,
 			ConversationID: turn.ConversationID,
 			TurnID:         turn.ID,
 			Type:           model.RecordError,
 			Content:        err.Error(),
 			CreatedAt:      turn.UpdatedAt,
 		})
+		zap.L().Error("turn processing failed",
+			zap.String("agent_space", turn.AgentSpaceName),
+			zap.String("conversation_id", turn.ConversationID),
+			zap.String("turn_id", turn.ID),
+			zap.Duration("duration", completedAt.Sub(startedAt)),
+			zap.Error(err),
+		)
 		return
 	}
 	response = sanitizeFinalText(response)
@@ -255,17 +518,23 @@ func (s *Service) processTurn(turn model.Turn) {
 	_ = s.store.UpdateTurn(ctx, turn)
 	_ = s.store.AppendConversationRecord(ctx, model.Record{
 		ID:             store.NewRecordID(),
-		AgentSpaceID:   turn.AgentSpaceID,
+		AgentSpaceName: turn.AgentSpaceName,
 		ConversationID: turn.ConversationID,
 		TurnID:         turn.ID,
 		Type:           model.RecordResponse,
 		Content:        response,
 		CreatedAt:      turn.UpdatedAt,
 	})
+	zap.L().Info("turn processing completed",
+		zap.String("agent_space", turn.AgentSpaceName),
+		zap.String("conversation_id", turn.ConversationID),
+		zap.String("turn_id", turn.ID),
+		zap.Duration("duration", completedAt.Sub(startedAt)),
+	)
 }
 
 func (s *Service) runADKTurn(ctx context.Context, turn model.Turn) (string, error) {
-	return s.runADKPrompt(ctx, turn.AgentSpaceID, turn.ConversationID, turn.Prompt, func(event *adksession.Event) {
+	return s.runADKPrompt(ctx, turn.AgentSpaceName, turn.ConversationID, "", turn.Prompt, func(event *adksession.Event) {
 		s.appendADKEventRecord(ctx, turn, event)
 	})
 }
@@ -275,21 +544,51 @@ func (s *Service) runADKTask(ctx context.Context, task model.Task) (string, erro
 	if task.ConversationID != "" {
 		sessionID = task.ConversationID
 	}
-	return s.runADKPrompt(ctx, task.AgentSpaceID, sessionID, task.Instruction, func(event *adksession.Event) {
+	return s.runADKPrompt(ctx, task.AgentSpaceName, sessionID, task.ID, task.Instruction, func(event *adksession.Event) {
 		s.appendADKTaskEventRecord(ctx, task, event)
 	})
 }
 
-func (s *Service) runADKPrompt(ctx context.Context, agentSpaceID, sessionID, prompt string, recordEvent func(*adksession.Event)) (string, error) {
-	space, err := s.store.GetAgentSpace(ctx, agentSpaceID)
+func (s *Service) runADKPrompt(ctx context.Context, agentSpaceName, sessionID, taskID, prompt string, recordEvent func(*adksession.Event)) (string, error) {
+	space, err := s.store.GetAgentSpace(ctx, agentSpaceName)
 	if err != nil {
 		return "", fmt.Errorf("load agent space: %w", err)
 	}
+	zap.L().Debug("creating ADK runtime",
+		zap.String("agent_space", agentSpaceName),
+		zap.String("session_id", sessionID),
+		zap.String("task_id", taskID),
+		zap.String("llm_provider", space.LLM.Provider),
+		zap.String("llm_model", space.LLM.Model),
+		zap.Bool("wecom_enabled", space.Integrations.WeCom.Enabled),
+	)
 	llm, err := s.modelFactory(ctx, space.LLM, space.Environment)
 	if err != nil {
 		return "", fmt.Errorf("create ADK model: %w", err)
 	}
-	adkAgent, err := NewADKChainAgentWithEnv(ctx, llm, s.skillRunner.RootDir(), s.skillRunner, space.Environment)
+	toolEnv := cloneEnvVars(space.Environment)
+	runID := firstNonEmpty(taskID, sessionID)
+	stagingDir, err := s.prepareArtifactStagingDir(agentSpaceName, runID)
+	if err != nil {
+		return "", fmt.Errorf("prepare artifact staging dir: %w", err)
+	}
+	if stagingDir != "" {
+		toolEnv["NETX_ARTIFACT_DIR"] = stagingDir
+	}
+	if taskID != "" {
+		toolEnv["NETX_TASK_ID"] = taskID
+	}
+	artifactTools, err := newArtifactTools(s.store, agentSpaceName, taskID, stagingDir)
+	if err != nil {
+		return "", fmt.Errorf("create artifact tools: %w", err)
+	}
+	extraTools := append([]adktool.Tool{}, artifactTools...)
+	wecomTools, err := newWeComTools(space, s.wecomClient)
+	if err != nil {
+		return "", fmt.Errorf("create wecom tools: %w", err)
+	}
+	extraTools = append(extraTools, wecomTools...)
+	adkAgent, err := NewADKChainAgentWithEnv(ctx, llm, s.skillRunner.RootDir(), s.skillRunner, toolEnv, extraTools...)
 	if err != nil {
 		return "", fmt.Errorf("create ADK agent: %w", err)
 	}
@@ -297,6 +596,7 @@ func (s *Service) runADKPrompt(ctx context.Context, agentSpaceID, sessionID, pro
 		AppName:           "netx-chain287",
 		Agent:             adkAgent,
 		SessionService:    s.sessionService,
+		ArtifactService:   s.artifactService,
 		AutoCreateSession: true,
 	})
 	if err != nil {
@@ -305,7 +605,7 @@ func (s *Service) runADKPrompt(ctx context.Context, agentSpaceID, sessionID, pro
 
 	content := genai.NewContentFromText(prompt, genai.RoleUser)
 	var finalText string
-	for event, err := range adkRunner.Run(ctx, agentSpaceID, sessionID, content, agent.RunConfig{
+	for event, err := range adkRunner.Run(ctx, agentSpaceName, sessionID, content, agent.RunConfig{
 		StreamingMode: agent.StreamingModeNone,
 	}) {
 		if err != nil {
@@ -313,6 +613,9 @@ func (s *Service) runADKPrompt(ctx context.Context, agentSpaceID, sessionID, pro
 		}
 		if event == nil {
 			continue
+		}
+		if taskID != "" {
+			s.persistSkillArtifactCandidates(ctx, agentSpaceName, taskID, stagingDir, event)
 		}
 		if recordEvent != nil {
 			recordEvent(event)
@@ -324,29 +627,185 @@ func (s *Service) runADKPrompt(ctx context.Context, agentSpaceID, sessionID, pro
 		}
 	}
 	if strings.TrimSpace(finalText) == "" {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", fmt.Errorf("ADK agent produced no final text")
 	}
 	return finalText, nil
 }
 
+func (s *Service) persistSkillArtifactCandidates(ctx context.Context, agentSpaceName, taskID, stagingDir string, event *adksession.Event) {
+	if event == nil || event.Content == nil || strings.TrimSpace(stagingDir) == "" {
+		return
+	}
+	runtime := artifactToolRuntime{
+		store:          s.store,
+		agentSpaceName: agentSpaceName,
+		taskID:         taskID,
+		stagingDir:     stagingDir,
+	}
+	for _, part := range event.Content.Parts {
+		if part == nil || part.FunctionResponse == nil || part.FunctionResponse.Name != skills.ExecuteActionToolName {
+			continue
+		}
+		for _, candidate := range artifactCandidatesFromFunctionResponse(part.FunctionResponse.Response) {
+			if strings.TrimSpace(candidate.Ref) == "" {
+				continue
+			}
+			_, err := saveArtifactFile(nil, runtime, saveArtifactFileInput{
+				Path:        candidate.Ref,
+				Name:        candidate.Name,
+				MimeType:    candidate.MimeType,
+				Description: candidate.Description,
+			})
+			if err != nil {
+				label := firstNonEmpty(candidate.Name, candidate.Ref)
+				s.appendTaskStatus(ctx, agentSpaceName, taskID, fmt.Sprintf("Skill 产物保存失败（%s）：%s", label, err))
+			}
+		}
+	}
+}
+
+func artifactCandidatesFromFunctionResponse(response any) []skills.ArtifactCandidate {
+	output, ok := parseExecuteActionOutputValue(response)
+	if !ok {
+		return nil
+	}
+	candidates := append([]skills.ArtifactCandidate{}, output.Artifacts...)
+	if output.Output != nil {
+		candidates = append(candidates, output.Output.Artifacts...)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	deduped := make([]skills.ArtifactCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		key := strings.TrimSpace(candidate.Ref) + "\x00" + strings.TrimSpace(candidate.Name)
+		if key == "\x00" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		deduped = append(deduped, candidate)
+	}
+	return deduped
+}
+
+func parseExecuteActionOutputValue(response any) (skills.ExecuteActionOutput, bool) {
+	var output skills.ExecuteActionOutput
+	switch v := response.(type) {
+	case skills.ExecuteActionOutput:
+		return v, true
+	case map[string]any:
+		if result, ok := v["result"]; ok {
+			response = result
+		}
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		return output, false
+	}
+	if err := json.Unmarshal(data, &output); err != nil {
+		return output, false
+	}
+	return output, output.Skill != "" || output.Action != "" || output.Output != nil || len(output.Artifacts) > 0
+}
+
+func (s *Service) prepareArtifactStagingDir(agentSpaceName, runID string) (string, error) {
+	if s.store == nil || strings.TrimSpace(agentSpaceName) == "" || strings.TrimSpace(runID) == "" {
+		return "", nil
+	}
+	dir := filepath.Join(s.store.Root(), agentSpaceName, "tmp", "artifact-staging", store.SafeName(runID))
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+func cloneEnvVars(values model.EnvVars) model.EnvVars {
+	cloned := make(model.EnvVars, len(values)+2)
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func newGeminiModel(ctx context.Context, cfg model.LLMConfig, env model.EnvVars) (adkmodel.LLM, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
-	if provider != "" && provider != "gemini" && provider != "google" && provider != "google-ai" {
+	if provider == "" {
+		provider = "gemini"
+	}
+	if provider != "gemini" && provider != "google" && provider != "google-ai" && provider != "gemini-relay" {
 		return nil, fmt.Errorf("unsupported llm provider %q", cfg.Provider)
 	}
 	modelName := strings.TrimSpace(cfg.Model)
 	if modelName == "" {
 		modelName = "gemini-2.5-flash"
 	}
-	apiKey := strings.TrimSpace(cfg.APIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(env["GOOGLE_API_KEY"])
+	clientConfig, err := newGeminiClientConfig(provider, cfg, env)
+	if err != nil {
+		return nil, err
 	}
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(env["GEMINI_API_KEY"])
-	}
-	clientConfig := &genai.ClientConfig{APIKey: apiKey}
 	return gemini.NewModel(ctx, modelName, clientConfig)
+}
+
+func newGeminiClientConfig(provider string, cfg model.LLMConfig, env model.EnvVars) (*genai.ClientConfig, error) {
+	if provider == "gemini-relay" {
+		apiKey := resolveRelayAPIKey(cfg, env)
+		if apiKey == "" {
+			return nil, fmt.Errorf("llm apiKey is required for provider %q", provider)
+		}
+		baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+		if baseURL == "" {
+			return nil, fmt.Errorf("llm baseUrl is required for provider %q", provider)
+		}
+		if strings.HasSuffix(baseURL, "/v1beta") {
+			return nil, fmt.Errorf("llm baseUrl for provider %q should be the relay root URL, not include /v1beta", provider)
+		}
+		return &genai.ClientConfig{
+			APIKey:  apiKey,
+			Backend: genai.BackendGeminiAPI,
+			HTTPOptions: genai.HTTPOptions{
+				BaseURL:    baseURL,
+				APIVersion: "v1beta",
+				Headers: http.Header{
+					"Authorization": []string{"Bearer " + apiKey},
+				},
+			},
+		}, nil
+	}
+
+	return &genai.ClientConfig{
+		APIKey:  resolveNativeGeminiAPIKey(cfg, env),
+		Backend: genai.BackendGeminiAPI,
+	}, nil
+}
+
+func resolveNativeGeminiAPIKey(cfg model.LLMConfig, env model.EnvVars) string {
+	if apiKey := strings.TrimSpace(cfg.APIKey); apiKey != "" {
+		return apiKey
+	}
+	if apiKey := strings.TrimSpace(env["GOOGLE_API_KEY"]); apiKey != "" {
+		return apiKey
+	}
+	return strings.TrimSpace(env["GEMINI_API_KEY"])
+}
+
+func resolveRelayAPIKey(cfg model.LLMConfig, env model.EnvVars) string {
+	if apiKey := strings.TrimSpace(cfg.APIKey); apiKey != "" {
+		return apiKey
+	}
+	for _, key := range []string{"GEMINI_RELAY_API_KEY", "TOKENSTARS_API_KEY", "CC_SWITCH_API_KEY"} {
+		if apiKey := strings.TrimSpace(env[key]); apiKey != "" {
+			return apiKey
+		}
+	}
+	return ""
 }
 
 func (s *Service) appendADKEventRecord(ctx context.Context, turn model.Turn, event *adksession.Event) {
@@ -359,7 +818,7 @@ func (s *Service) appendADKEventRecord(ctx context.Context, turn model.Turn, eve
 			continue
 		}
 		record.ID = store.NewRecordID()
-		record.AgentSpaceID = turn.AgentSpaceID
+		record.AgentSpaceName = turn.AgentSpaceName
 		record.ConversationID = turn.ConversationID
 		record.TurnID = turn.ID
 		record.CreatedAt = time.Now().UTC()
@@ -377,7 +836,7 @@ func (s *Service) appendADKTaskEventRecord(ctx context.Context, task model.Task,
 			continue
 		}
 		record.ID = store.NewRecordID()
-		record.AgentSpaceID = task.AgentSpaceID
+		record.AgentSpaceName = task.AgentSpaceName
 		record.TaskID = task.ID
 		record.CreatedAt = time.Now().UTC()
 		_ = s.store.AppendTaskRecord(ctx, record)
@@ -525,27 +984,15 @@ func parseExecuteActionInput(args any) (skills.ExecuteActionInput, bool) {
 }
 
 func parseExecuteActionOutput(response any) (skills.ExecuteActionOutput, bool) {
-	var output skills.ExecuteActionOutput
 	switch v := response.(type) {
 	case skills.ExecuteActionOutput:
 		return v, true
 	case map[string]any:
-		if result, ok := v["result"].(map[string]any); ok {
-			v = result
-		}
-		output.Skill, _ = v["skill"].(string)
-		output.Action, _ = v["action"].(string)
-		output.Description, _ = v["description"].(string)
-		output.Command, _ = v["command"].(string)
-		if ro, ok := v["readonly"].(bool); ok {
-			output.ReadOnly = ro
-		}
-		if ap, ok := v["approval"].(bool); ok {
-			output.Approval = ap
-		}
+		output, _ := parseExecuteActionOutputValue(v)
 		return output, output.Skill != "" && output.Action != ""
 	default:
-		return output, false
+		output, ok := parseExecuteActionOutputValue(response)
+		return output, ok && output.Skill != "" && output.Action != ""
 	}
 }
 
@@ -624,11 +1071,28 @@ func requiresApproval(instruction string) bool {
 	return false
 }
 
+func normalizeTaskSource(source string) (string, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return model.TaskSourceManual, nil
+	}
+	switch source {
+	case model.TaskSourceChat,
+		model.TaskSourceManual,
+		model.TaskSourceAutomationOnce,
+		model.TaskSourceAutomationSchedule,
+		model.TaskSourceAutomationEvent:
+		return source, nil
+	default:
+		return "", fmt.Errorf("unsupported task source %q", source)
+	}
+}
+
 func (s *Service) updateLinkedTurn(ctx context.Context, task model.Task, response string, status string, updatedAt time.Time) {
 	if task.ConversationID == "" || task.TurnID == "" {
 		return
 	}
-	turn, err := s.store.GetTurn(ctx, task.AgentSpaceID, task.ConversationID, task.TurnID)
+	turn, err := s.store.GetTurn(ctx, task.AgentSpaceName, task.ConversationID, task.TurnID)
 	if err != nil {
 		return
 	}
@@ -643,7 +1107,7 @@ func (s *Service) updateLinkedTurn(ctx context.Context, task model.Task, respons
 	_ = s.store.UpdateTurn(ctx, turn)
 	_ = s.store.AppendConversationRecord(ctx, model.Record{
 		ID:             store.NewRecordID(),
-		AgentSpaceID:   task.AgentSpaceID,
+		AgentSpaceName: task.AgentSpaceName,
 		ConversationID: task.ConversationID,
 		TurnID:         task.TurnID,
 		TaskID:         task.ID,

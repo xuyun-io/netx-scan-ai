@@ -1,6 +1,6 @@
 ---
 name: chain287-chain-query
-description: NetX Chain287 on-chain read-only queries using Foundry cast. Covers chain basics, chain analytics, validator set, and node peer status. Use for block height, chain ID, RPC health, genesis hash, recent block analysis, chain health aggregation, active validators, or peer count.
+description: NetX Chain287 on-chain read-only queries. Covers command suggestions, chain basics, RPC/node status, chain analytics, transactions, balances, blocks, validator set, and node peer status. Use for common command discovery, block height, chain ID, RPC health, genesis hash, chain mode, sync status, transaction lookup, address balance, recent block analysis, chain health aggregation, active validators, or peer count.
 ---
 
 # Chain287 Chain Query
@@ -14,9 +14,14 @@ Use this skill for read-only Chain287 on-chain queries.
 3. Use `CHAIN287_RPC_URL` first, then `ETH_RPC_URL`.
 4. Return concise Chinese answers for users, with the raw action result preserved in records.
 5. If RPC or `cast` is unavailable, report the missing dependency clearly.
-6. Read `references/chain287.md` when adding or changing Chain287 RPC actions.
+6. For "能做什么", "常用命令", "新手怎么问" and similar onboarding requests, call `command_catalog` first.
+7. Read `references/chain287.md` when adding or changing Chain287 RPC actions.
 
 ## Available Actions
+
+### Command discovery (`scripts/chain-rpc.sh`)
+
+- `command_catalog`: return a curated read-only command catalog grouped by SRE workflow. Use this to guide blockchain/SRE newcomers.
 
 ### Chain basics (`scripts/chain-basic.sh`)
 
@@ -25,6 +30,16 @@ Use this skill for read-only Chain287 on-chain queries.
 - `chain_id`: Chain287 chain ID.
 - `rpc_alive`: RPC reachability and latency.
 - `genesis_hash`: genesis block hash.
+
+### RPC, node, block, account, and transaction (`scripts/chain-rpc.sh`)
+
+- `rpc_snapshot`: formatted node snapshot: chain ID, latest block age, peer count, gas price, sync status, genesis hash, chain mode, and active validator count.
+- `sync_status`: check `eth_syncing` and latest block age.
+- `chain_mode`: detect genesis mode vs StakeHub / ValidatorSet mode using `StakeHub.transferGasLimit()` and list active validators.
+- `address_balance`: read native NETX balance and nonce. Requires `address`.
+- `transaction_lookup`: read transaction details by hash. Requires `tx_hash`.
+- `transaction_receipt`: read transaction receipt, execution status, fee, logs count, and confirmations. Requires `tx_hash`.
+- `block_lookup`: read a block by number or tag. Accepts `block` (`latest` by default).
 
 ### Chain analytics (`scripts/chain-analytics.sh`)
 
@@ -88,6 +103,7 @@ For `active_validators`, `data` contains `validators` and `count`:
 
 This skill is organized by business layer:
 
+- `scripts/chain-rpc.sh`: command catalog, RPC/node snapshot, block, account, and transaction queries.
 - `scripts/chain-basic.sh`: single-call chain state queries.
 - `scripts/chain-analytics.sh`: multi-block analysis and health aggregation.
 - `scripts/validator-node.sh`: validator set and node/network queries.

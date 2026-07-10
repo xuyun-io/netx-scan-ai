@@ -7,6 +7,7 @@ import {
   type LucideIcon,
   Workflow,
 } from 'lucide-react';
+import { RESOURCE_TIME_COLUMN_WIDTH, TASK_AUTOMATION_COLUMN_WIDTH } from '@/data/tableColumns';
 
 export type WorkspaceView = 'chat' | 'tasks' | 'automations' | 'artifacts' | 'context-files';
 export type CreateMode = 'none' | 'task' | 'automation';
@@ -100,27 +101,27 @@ export const resourceColumns: Record<Exclude<WorkspaceView, 'chat'>, ResourceCol
     { id: 'status', label: 'Status', width: '150px' },
     { id: 'priority', label: 'Priority', width: '130px' },
     { id: 'type', label: 'Type', width: '150px' },
-    { id: 'automation', label: 'Automation', width: '160px' },
-    { id: 'updated', label: 'Last updated at', width: '210px' },
+    { id: 'automation', label: 'Automation', width: TASK_AUTOMATION_COLUMN_WIDTH },
+    { id: 'updated', label: 'Last updated at', width: RESOURCE_TIME_COLUMN_WIDTH },
   ],
   automations: [
     { id: 'name', label: 'Name', width: 'minmax(260px, 1.4fr)' },
     { id: 'trigger', label: 'Trigger', width: '170px' },
     { id: 'status', label: 'Status', width: '150px' },
     { id: 'enabled', label: 'Enabled', width: '150px' },
-    { id: 'triggered', label: 'Last triggered', width: '210px' },
-    { id: 'created', label: 'Created', width: '180px' },
+    { id: 'triggered', label: 'Last triggered', width: RESOURCE_TIME_COLUMN_WIDTH },
+    { id: 'created', label: 'Created', width: RESOURCE_TIME_COLUMN_WIDTH },
   ],
   artifacts: [
     { id: 'name', label: 'Name', width: 'minmax(280px, 1.5fr)' },
     { id: 'type', label: 'Type', width: '160px' },
     { id: 'size', label: 'Size', width: '140px' },
-    { id: 'created', label: 'Created', width: '210px' },
+    { id: 'created', label: 'Created', width: RESOURCE_TIME_COLUMN_WIDTH },
   ],
   'context-files': [
     { id: 'name', label: 'Name', width: 'minmax(320px, 1.6fr)' },
     { id: 'status', label: 'Status', width: '170px' },
-    { id: 'uploaded', label: 'Date uploaded', width: '210px' },
+    { id: 'uploaded', label: 'Date uploaded', width: RESOURCE_TIME_COLUMN_WIDTH },
   ],
 };
 

@@ -88,6 +88,36 @@ func main() {
 	}
 }
 
+func TestRunnerRejectsNonReadOnlyAction(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "demo-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `version: "1"
+actions:
+  mutate:
+    description: Should not run.
+    readonly: false
+    approval: false
+    timeoutSeconds: 10
+    command: go
+    args:
+      - version
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "tools.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := NewRunner(Config{RootDir: root}).Run(context.Background(), "demo-skill", "mutate", nil)
+	if err == nil {
+		t.Fatal("expected non-readonly action to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not marked readonly") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
 func TestPrepareCommandUsesInterpreterForScripts(t *testing.T) {
 	command, args, err := prepareCommand(t.TempDir(), action{
 		Command: "scripts/example.sh",

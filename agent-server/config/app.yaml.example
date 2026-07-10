@@ -1,0 +1,33 @@
+# NetX SRE Agent server configuration.
+# Copy this file to config/app.yaml and update values.
+
+# HTTP listen address
+httpAddr: :8080
+
+# Directory layout. All relative paths are resolved against path.root.
+path:
+  root: .
+  agents: data/agents
+  web: web/dist
+  skills: skills
+
+# External URL used in Enterprise WeChat task links.
+# Example: https://netx-agent.example.com
+publicURL: ""
+
+# Logging
+logLevel: info      # debug | info | warn | error
+logFormat: json     # json | console
+
+# Basic auth (optional). When both username and password are set,
+# all /api/v1/* endpoints (except /api/v1/login) require authentication.
+auth:
+  username: admin
+  password: changeme
+
+
+llm:
+  provider: gemini-relay
+  model: gemini-2.5-pro
+  apiKey: sk-xxxx
+  baseUrl: https://www.xxxxxx.com

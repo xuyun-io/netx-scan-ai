@@ -1537,9 +1537,10 @@ function CreateAgentWizard({ busy, open, onCreate, onOpenChange }: CreateAgentWi
     }
   }, [open]);
 
-  const nameValid = /^[a-zA-Z0-9]{1,64}$/.test(form.name.trim());
+  const trimmedName = form.name.trim();
+  const nameValid = /^[a-zA-Z0-9_-]{1,64}$/.test(trimmedName);
   const canCreate =
-    nameValid && form.name.trim().length > 0 && form.name.trim().length <= 128 && form.model.trim().length > 0;
+    nameValid && trimmedName.length > 0 && trimmedName.length <= 128 && form.model.trim().length > 0;
   const canContinue = step === 0 ? canCreate : step === 1 ? envRowsAreValid(form.envVars) : true;
 
   const update = (values: Partial<WizardState>) => {
@@ -1666,17 +1667,30 @@ function WizardRail({ step }: { step: number }) {
 }
 
 function StepName({ form, onChange }: StepProps) {
+  const trimmedName = form.name.trim();
+  const nameTouched = trimmedName.length > 0;
+  const nameValid = /^[a-zA-Z0-9_-]{1,64}$/.test(trimmedName);
+  const nameError = nameTouched && !nameValid;
+
   return (
     <WizardSection eyebrow="Step 1" title="基础信息" description="创建 AgentSpace 并绑定 LLM 配置。">
       <form onSubmit={(event) => event.preventDefault()} className="grid gap-4">
-        <LightField label="Agent 名称" hint="全局唯一，仅字母和数字，1-64 个字符，用于 URL 访问。">
+        <LightField label="Agent 名称" hint="全局唯一，仅字母、数字、下划线和连字符，1-64 个字符，用于 URL 访问。">
           <input
-            className={controlClassName}
+            className={cn(
+              controlClassName,
+              nameError && 'border-red-300 focus:border-red-500 focus:ring-red-100',
+            )}
             maxLength={64}
             value={form.name}
             onChange={(event) => onChange({ name: event.target.value })}
             placeholder="例如 finopsprod"
           />
+          {nameError && (
+            <div className="mt-1.5 text-xs font-medium text-red-600">
+              名称只能包含字母、数字、下划线（_）和连字符（-），长度 1-64 个字符。
+            </div>
+          )}
         </LightField>
         <LightField label="描述" hint={`${form.description.length}/512`}>
           <textarea
@@ -1713,10 +1727,9 @@ function StepName({ form, onChange }: StepProps) {
           </LightField>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <LightField label="API Key" hint="可留空，后端使用运行环境变量。">
+          <LightField label="API Key" hint="可留空，后端使用运行环境变量。创建时明文显示，保存后不再返回前端。">
             <input
               className={controlClassName}
-              type="password"
               value={form.apiKey}
               onChange={(event) => onChange({ apiKey: event.target.value })}
               placeholder="Optional"

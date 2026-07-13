@@ -959,10 +959,7 @@ func maskAPIKey(key string) string {
 	if key == "" {
 		return ""
 	}
-	if len(key) <= 8 {
-		return "****"
-	}
-	return key[:4] + "****" + key[len(key)-4:]
+	return "********"
 }
 
 func applyLimit[T any](values []T, maxResults int) []T {

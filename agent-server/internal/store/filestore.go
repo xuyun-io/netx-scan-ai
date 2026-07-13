@@ -162,8 +162,8 @@ func validateAgentSpaceName(name string) error {
 		return fmt.Errorf("name must be at most 64 characters")
 	}
 	for _, r := range name {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
-			return fmt.Errorf("name must be alphanumeric")
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return fmt.Errorf("name must only contain letters, digits, underscores or hyphens")
 		}
 	}
 	return nil

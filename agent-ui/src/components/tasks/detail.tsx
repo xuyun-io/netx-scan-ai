@@ -10,7 +10,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { StatusBadge } from '@/components/status-badge';
-import type { Artifact, RecordEntry, Task } from '@/lib/api';
+import { ExecutionPanel } from '@/components/execution/execution-panel';
+import { getLocalToolTrace, type Artifact, type RecordEntry, type Task } from '@/lib/api';
 import { groupRecordsIntoActivities } from '@/lib/task-activities';
 import { isTaskFinished } from '@/lib/tasks';
 import { cn, formatPriority, formatSize, formatTime } from '@/lib/utils';
@@ -36,6 +37,8 @@ export function TaskDetailView({
 }) {
   const [activitiesExpanded, setActivitiesExpanded] = useState(false);
   const [expandedActivityIds, setExpandedActivityIds] = useState<Set<string>>(new Set());
+  const [rawResponses, setRawResponses] = useState<Record<string, string>>({});
+  const [rawResponseErrors, setRawResponseErrors] = useState<Record<string, string>>({});
   const resultContent = useMemo(() => {
     for (let i = records.length - 1; i >= 0; i--) {
       if (records[i].recordType === 'RESPONSE' && records[i].content) {
@@ -58,7 +61,7 @@ export function TaskDetailView({
     setExpandedActivityIds(new Set());
   }, []);
 
-  const toggleActivity = useCallback((id: string) => {
+  const toggleActivity = useCallback((id: string, rawResultRef?: string) => {
     setExpandedActivityIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -68,11 +71,25 @@ export function TaskDetailView({
       }
       return next;
     });
-  }, []);
+    if (rawResultRef && !rawResponses[id] && !rawResponseErrors[id]) {
+      void getLocalToolTrace(task.agentSpaceName, rawResultRef)
+        .then(({ trace }) => {
+          setRawResponses((prev) => ({ ...prev, [id]: JSON.stringify(trace.response, null, 2) }));
+        })
+        .catch((error: unknown) => {
+          setRawResponseErrors((prev) => ({
+            ...prev,
+            [id]: error instanceof Error ? error.message : 'Unable to load full response',
+          }));
+        });
+    }
+  }, [rawResponseErrors, rawResponses, task.agentSpaceName]);
 
   useEffect(() => {
     setActivitiesExpanded(false);
     setExpandedActivityIds(new Set());
+    setRawResponses({});
+    setRawResponseErrors({});
   }, [task.taskId]);
 
   return (
@@ -186,6 +203,10 @@ export function TaskDetailView({
           </section>
         )}
 
+        <div className="mt-4">
+          <ExecutionPanel agentSpaceName={task.agentSpaceName} taskId={task.taskId} />
+        </div>
+
         <section className="mt-4 overflow-hidden rounded-lg border border-[#222b36] bg-[#121922]">
           <div
             className="flex w-full cursor-pointer items-center justify-between px-5 py-4 text-left"
@@ -257,13 +278,16 @@ export function TaskDetailView({
                                 </pre>
                               </div>
                             )}
-                            {activity.response && (
+                            {(rawResponses[activity.id] || activity.response) && (
                               <div>
                                 <div className="mb-1 text-xs font-medium text-[#8f98a6]">Response</div>
                                 <pre className="max-h-96 overflow-auto rounded-md bg-[#0b0f14] p-3 text-xs text-[#f2f4f8]">
-                                  {activity.response}
+                                  {rawResponses[activity.id] || activity.response}
                                 </pre>
                               </div>
+                            )}
+                            {rawResponseErrors[activity.id] && (
+                              <div className="text-xs text-red-400">{rawResponseErrors[activity.id]}</div>
                             )}
                             {activity.content && (
                               <div
@@ -278,7 +302,7 @@ export function TaskDetailView({
                       </div>
                       <button
                         className="shrink-0 text-xs text-[#8f82ff] hover:text-[#aaa2ff]"
-                        onClick={() => toggleActivity(activity.id)}
+                        onClick={() => toggleActivity(activity.id, activity.rawResultRef)}
                       >
                         {expanded ? 'Collapse' : 'Expand'}
                       </button>

@@ -58,9 +58,10 @@ export function TaskRow({
         onChange={() => onSelect(selected ? null : task.taskId)}
         onClick={(event) => event.stopPropagation()}
       />
-      <div className="truncate border-l border-[#303b49] px-3 font-medium text-[#8f82ff] underline-offset-2 hover:underline">
+      <div className="min-w-0 border-l border-[#303b49] px-3 font-medium text-[#8f82ff] underline-offset-2 hover:underline">
         <button
-          className="text-left"
+          className="block w-full truncate text-left"
+          title={task.name}
           onClick={(event) => {
             event.stopPropagation();
             onOpenDetail(task);

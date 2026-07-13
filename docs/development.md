@@ -7,9 +7,9 @@ This guide covers local development for the Go backend and React frontend.
 - Go 1.26.x.
 - Node.js 24.x and npm.
 - Docker and Docker Compose for container builds.
-- `cast` from Foundry if you run Chain287 skills outside the Docker image.
+- Any command-line tools required by the skills you enable.
 - A Gemini API key or a Gemini relay API key.
-- A Chain287 RPC endpoint for real skill execution.
+- External endpoints required by the skills you enable.
 
 ## Repository Layout
 
@@ -79,7 +79,7 @@ Create an AgentSpace in the UI, then configure:
 - LLM provider.
 - Model name.
 - API key or relay API key.
-- Chain287 RPC environment variables.
+- Runtime environment variables required by your skills.
 - Optional Enterprise WeChat webhook.
 
 ## Build Frontend for Backend Hosting
@@ -129,4 +129,4 @@ The frontend currently uses the TypeScript compiler and Vite build as the primar
 - Keep generated binaries out of the repository.
 - Keep `agent-server/config/app.yaml` and `agent-server/data/` local.
 - Prefer updating docs in the same change that modifies API behavior, configuration, or deployment.
-- Avoid logging secrets, webhook URLs, full prompts containing credentials, or private RPC endpoints.
+- Avoid logging secrets, webhook URLs, full prompts containing credentials, or private service endpoints.

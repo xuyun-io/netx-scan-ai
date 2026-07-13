@@ -24,7 +24,7 @@ curl -X POST "$BASE_URL/api/v1/createConversation" \
   -H 'content-type: application/json' \
   -d '{
     "agentSpaceName": "demo",
-    "title": "Chain287 inspection"
+    "title": "Infrastructure inspection"
   }'
 ```
 
@@ -36,7 +36,7 @@ curl -X POST "$BASE_URL/api/v1/createTurn" \
   -d '{
     "agentSpaceName": "demo",
     "conversationId": "conversation-...",
-    "prompt": "Check the latest Chain287 block and summarize the result."
+    "prompt": "Check service health and summarize the result."
   }'
 ```
 
@@ -63,7 +63,7 @@ curl -X POST "$BASE_URL/api/v1/createTask" \
     "priority": "normal",
     "type": "inspection",
     "source": "manual",
-    "instruction": "Run the Chain287 SRE inspection report and save the artifact."
+    "instruction": "Run the SRE inspection report and save the artifact."
   }'
 ```
 

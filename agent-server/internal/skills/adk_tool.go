@@ -31,6 +31,8 @@ type ExecuteActionOutput struct {
 	Stderr         string              `json:"stderr,omitempty"`
 	ExitCode       int                 `json:"exitCode"`
 	DurationMillis int64               `json:"durationMillis"`
+	RawResultRef   string              `json:"rawResultRef,omitempty"`
+	TraceRef       string              `json:"traceRef,omitempty"`
 }
 
 func NewExecuteActionTool(runner *Runner) (tool.Tool, error) {

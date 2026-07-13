@@ -40,6 +40,7 @@ import re
 import statistics
 import subprocess
 import sys
+import time
 import urllib.request
 from collections import Counter, defaultdict
 
@@ -60,6 +61,9 @@ SEL_REGISTERED_VALIDATORS = "0xbff02e20"
 SEL_CONSENSUS = "0x059ddd22"
 SEL_SYMBOL = "0x95d89b41"
 MAX_SCAN_BLOCKS = 1200
+BATCH_SIZE = 100
+SOFT_DEADLINE_SECONDS = 105
+started_at = time.monotonic()
 
 
 def timestamp():
@@ -81,14 +85,57 @@ def emit(status, message, data=None, error=None):
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
+def remaining_seconds():
+    return SOFT_DEADLINE_SECONDS - (time.monotonic() - started_at)
+
+
 def rpc(method, params=None, timeout=12):
+    remaining = remaining_seconds()
+    if remaining <= 0:
+        raise TimeoutError(f"validator_window_stats exceeded internal {SOFT_DEADLINE_SECONDS}s deadline")
     body = json.dumps({"jsonrpc": "2.0", "method": method, "params": params or [], "id": 1}).encode()
     req = urllib.request.Request(rpc_url, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=max(1, min(timeout, remaining))) as resp:
         payload = json.loads(resp.read())
     if "error" in payload:
         raise RuntimeError(f"{method} RPC error: {payload['error']}")
     return payload.get("result")
+
+
+def rpc_batch(calls, timeout=30):
+    """Execute JSON-RPC calls in one HTTP request and preserve input order.
+
+    Some RPC gateways disable batch requests. In that case callers can fall
+    back to regular rpc() without changing the report output schema.
+    """
+    if not calls:
+        return []
+    remaining = remaining_seconds()
+    if remaining <= 0:
+        raise TimeoutError(f"validator_window_stats exceeded internal {SOFT_DEADLINE_SECONDS}s deadline")
+    request_payload = [
+        {"jsonrpc": "2.0", "method": method, "params": params or [], "id": index + 1}
+        for index, (method, params) in enumerate(calls)
+    ]
+    req = urllib.request.Request(
+        rpc_url,
+        data=json.dumps(request_payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=max(1, min(timeout, remaining))) as resp:
+        payload = json.loads(resp.read())
+    if not isinstance(payload, list):
+        raise RuntimeError("RPC endpoint does not support JSON-RPC batch requests")
+    by_id = {item.get("id"): item for item in payload if isinstance(item, dict)}
+    results = []
+    for index in range(len(calls)):
+        item = by_id.get(index + 1)
+        if item is None:
+            raise RuntimeError(f"batch RPC response missing id {index + 1}")
+        if "error" in item:
+            raise RuntimeError(f"batch RPC error: {item['error']}")
+        results.append(item.get("result"))
+    return results
 
 
 def eth_call(to, data, block="latest"):
@@ -184,6 +231,45 @@ def block_by_number(number):
     return rpc("eth_getBlockByNumber", [hex(number), False])
 
 
+def blocks_by_number(numbers):
+    """Read blocks in bounded batches, falling back for non-batch RPC nodes."""
+    blocks = []
+    used_fallback = False
+    batch_enabled = True
+    for offset in range(0, len(numbers), BATCH_SIZE):
+        chunk = numbers[offset:offset + BATCH_SIZE]
+        calls = [("eth_getBlockByNumber", [hex(number), False]) for number in chunk]
+        if batch_enabled:
+            try:
+                blocks.extend(rpc_batch(calls))
+                continue
+            except Exception:
+                if remaining_seconds() < 20:
+                    raise
+                used_fallback = True
+                batch_enabled = False
+        if not batch_enabled:
+            blocks.extend(block_by_number(number) for number in chunk)
+    return blocks, used_fallback
+
+
+def first_block_at_or_after_timestamp(low, high, threshold):
+    """Find the first block whose timestamp is >= threshold in O(log n) RPCs."""
+    answer = high
+    while low <= high:
+        middle = (low + high) // 2
+        block = block_by_number(middle)
+        if not block:
+            low = middle + 1
+            continue
+        if hex_int(block.get("timestamp")) >= threshold:
+            answer = middle
+            high = middle - 1
+        else:
+            low = middle + 1
+    return answer
+
+
 try:
     latest = hex_int(rpc("eth_blockNumber"))
     to_block = parse_block_arg(to_arg, latest)
@@ -197,27 +283,22 @@ try:
         from_block = parse_block_arg(from_arg, to_block)
     else:
         threshold = to_ts - window_sec
-        cursor = to_block
-        scanned = 0
-        from_block = to_block
-        while cursor > 0 and scanned < MAX_SCAN_BLOCKS:
-            blk = block_by_number(cursor)
-            ts = hex_int(blk.get("timestamp"))
-            if ts <= threshold:
-                from_block = min(to_block, cursor + 1)
-                break
-            from_block = cursor
-            cursor -= 1
-            scanned += 1
-        if scanned >= MAX_SCAN_BLOCKS and cursor > 0:
+        search_low = max(0, to_block - MAX_SCAN_BLOCKS + 1)
+        oldest = block_by_number(search_low)
+        oldest_ts = hex_int(oldest.get("timestamp")) if oldest else to_ts
+        if search_low > 0 and oldest_ts > threshold:
             truncated = True
+            from_block = search_low
+        else:
+            from_block = first_block_at_or_after_timestamp(search_low, to_block, threshold)
 
     if from_block > to_block:
         raise ValueError(f"from_block({from_block}) > to_block({to_block})")
 
     blocks = []
-    for number in range(from_block, to_block + 1):
-        block = block_by_number(number)
+    block_numbers = list(range(from_block, to_block + 1))
+    raw_blocks, used_batch_fallback = blocks_by_number(block_numbers)
+    for number, block in zip(block_numbers, raw_blocks):
         if not block:
             continue
         blocks.append({
@@ -335,6 +416,12 @@ try:
         "lowBlockValidators": low_count,
         "unknownMiners": unknown_miners,
         "notes": notes,
+        "collection": {
+            "windowLookup": "binary_search",
+            "blockReadMode": "sequential_fallback" if used_batch_fallback else "json_rpc_batch",
+            "batchSize": BATCH_SIZE,
+            "durationMillis": round((time.monotonic() - started_at) * 1000),
+        },
     }
 
     message = (

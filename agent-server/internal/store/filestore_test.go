@@ -3,10 +3,32 @@ package store
 import (
 	"context"
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/model"
 )
+
+func TestTitleFromInstructionUsesAvailableTaskListWidth(t *testing.T) {
+	t.Run("keeps a meaningful title", func(t *testing.T) {
+		instruction := "使用chain287-sre-inspection-report skill 对 Chain287 执行完整巡检并生成 HTML 巡检报告，包含验证者和区块统计"
+		if got := titleFromInstruction(instruction); got != instruction {
+			t.Fatalf("titleFromInstruction() = %q, want full instruction", got)
+		}
+	})
+
+	t.Run("normalizes whitespace and caps very long titles", func(t *testing.T) {
+		instruction := "  一\n  二\t" + strings.Repeat("巡", 120)
+		got := titleFromInstruction(instruction)
+		runes := []rune(got)
+		if len(runes) != 99 || string(runes[len(runes)-3:]) != "..." {
+			t.Fatalf("titleFromInstruction() length = %d, value = %q", len(runes), got)
+		}
+		if got[:len("一 二 ")] != "一 二 " {
+			t.Fatalf("titleFromInstruction() did not normalize whitespace: %q", got)
+		}
+	})
+}
 
 func TestUpdateAgentSpace(t *testing.T) {
 	ctx := context.Background()

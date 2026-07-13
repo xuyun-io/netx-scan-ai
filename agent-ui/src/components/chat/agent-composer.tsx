@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   Check,
   Clock,
   Copy,
@@ -17,6 +18,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { StatusBadge } from '@/components/status-badge';
+import { ExecutionPanel } from '@/components/execution/execution-panel';
 import { Button } from '@/components/ui/button';
 import { promptTemplates } from '@/data/promptTemplates';
 import { buildTimelineItems, prettyPayload, type ChatEvent, type TimelineItem } from '@/lib/chat-events';
@@ -530,12 +532,21 @@ function ArtifactEvent({ event }: { event: Extract<ChatEvent, { type: 'artifact'
 }
 
 function AnswerEvent({ event, embedded = false }: { event: Extract<ChatEvent, { type: 'answer' }>; embedded?: boolean }) {
+  const [showTrace, setShowTrace] = useState(false);
   const body = (
     <>
       <div className="prose-netx min-w-0 max-w-full whitespace-pre-wrap break-words text-sm font-normal leading-6 text-[#b8c1cf] [overflow-wrap:anywhere]">{event.content}</div>
       {event.taskId && (
         <div className="mt-3 inline-flex rounded border border-[#8378ff]/40 px-2 py-1 text-xs font-medium text-[#9a91ff]">
           Task: {event.taskId}
+        </div>
+      )}
+      {event.agentSpaceName && event.turnId && (
+        <div className="mt-3">
+          <button className="inline-flex items-center gap-1.5 rounded border border-[#2b594f] bg-[#10231f] px-2 py-1 text-xs font-semibold text-[#72d8bd] hover:border-[#4a9c87]" onClick={() => setShowTrace((value) => !value)}>
+            <Activity className="h-3.5 w-3.5" /> {showTrace ? 'Hide execution trace' : 'View execution trace'}
+          </button>
+          {showTrace && <div className="mt-3"><ExecutionPanel compact agentSpaceName={event.agentSpaceName} conversationId={event.conversationId} turnId={event.turnId} /></div>}
         </div>
       )}
       <div className="mt-4 flex justify-end gap-3 text-[#9aa4b3]">

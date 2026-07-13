@@ -20,7 +20,7 @@ The structure follows the style used by mature open-source AI projects: a short 
 
 ## Audience
 
-- Operators running NetX AI for Chain287 inspection and scheduled automation.
+- Operators running NetX AI for inspection, reporting, and scheduled automation.
 - Developers extending backend APIs, frontend workspace views, skills, and integrations.
 - Platform teams packaging the all-in-one service into Docker or Kubernetes environments.
 
@@ -29,12 +29,12 @@ The structure follows the style used by mature open-source AI projects: a short 
 - Keep user-facing documentation in English.
 - Prefer task-oriented pages over historical analysis notes.
 - Keep configuration examples copyable and explicit.
-- Do not include secrets, real webhook URLs, private RPC endpoints, or API keys.
+- Do not include secrets, real webhook URLs, private service endpoints, or API keys.
 - When implementation changes, update the closest reference page in the same pull request.
 
 ## Current Scope
 
-NetX AI is a self-hosted Chain287 SRE agent workspace. It currently includes:
+NetX AI is a self-hosted SRE agent workspace. It currently includes:
 
 - Multi-AgentSpace management.
 - Chat conversations and turn records.
@@ -42,5 +42,5 @@ NetX AI is a self-hosted Chain287 SRE agent workspace. It currently includes:
 - ADK-backed Gemini model execution.
 - Gemini relay support for compatible proxy gateways.
 - File-backed persistence for agent data, task records, documents, and artifacts.
-- Skill execution for Chain287 read-only inspection workflows.
+- Skill execution for read-only inspection and reporting workflows.
 - Enterprise WeChat webhook notifications and system tool access.

@@ -30,7 +30,7 @@ export type ChatEvent =
   | { id: string; type: 'task'; taskId: string; title: string; status: Status; description?: string; createdAt?: string }
   | { id: string; type: 'approval'; taskId: string; title: string; risk: string; target: string; command: string; status: Status }
   | { id: string; type: 'artifact'; artifactId: string; name: string; artifactType: string; createdAt?: string }
-  | { id: string; type: 'answer'; content: string; taskId?: string; status: Status; createdAt?: string };
+  | { id: string; type: 'answer'; content: string; taskId?: string; status: Status; createdAt?: string; agentSpaceName?: string; conversationId?: string; turnId?: string };
 
 export type TimelineItem =
   | { id: string; kind: 'event'; event: ChatEvent }
@@ -76,7 +76,7 @@ export async function turnsToChatEvents(agentSpaceName: string, turns: Turn[]): 
         turnId: turn.turnId,
         maxResults: 100,
       });
-      events.push(...recordsToChatEvents(recordPage.records ?? [], { scopeKey }));
+      events.push(...recordsToChatEvents(recordPage.records ?? [], { scopeKey, traceScope: { agentSpaceName, conversationId: turn.conversationId, turnId: turn.turnId } }));
     } catch {
       events.push({
         id: scopedEventId(scopeKey, `${turn.turnId}-record-load-error`),
@@ -128,7 +128,7 @@ export async function turnsToChatEvents(agentSpaceName: string, turns: Turn[]): 
   return allEvents;
 }
 
-export function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?: string } = {}): ChatEvent[] {
+export function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?: string; traceScope?: { agentSpaceName: string; conversationId?: string; turnId?: string } } = {}): ChatEvent[] {
   const events: ChatEvent[] = [];
   const processById = new Map<string, Extract<ChatEvent, { type: 'tool' }>>();
 
@@ -261,6 +261,9 @@ export function recordsToChatEvents(records: RecordEntry[], options: { scopeKey?
         content,
         status: 'SUCCESS',
         createdAt: record.createdAt,
+		agentSpaceName: options.traceScope?.agentSpaceName,
+		conversationId: options.traceScope?.conversationId,
+		turnId: options.traceScope?.turnId,
       });
       continue;
     }
@@ -325,6 +328,9 @@ export function turnToAnswerEvent(turn: Turn, scopeKey?: string): Extract<ChatEv
     taskId: turn.taskId,
     status: turn.status,
     createdAt: turn.completedAt || turn.updatedAt,
+	agentSpaceName: turn.agentSpaceName,
+	conversationId: turn.conversationId,
+	turnId: turn.turnId,
   };
 }
 

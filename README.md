@@ -1,39 +1,29 @@
 # NetX AI
 
-NetX AI is a self-hosted Chain287 SRE agent workspace. It combines a Go backend, a React workspace UI, Google ADK-Go based agent execution, file-backed persistence, scheduled automations, skill tools, artifacts, and Enterprise WeChat notifications.
+NetX AI is a self-hosted AI operations workspace for infrastructure and SRE teams.
 
-The project is designed for operators who need a practical internal agent system rather than a general-purpose SaaS platform.
+Create an agent, ask it to inspect systems, turn recurring checks into scheduled automations, review execution records, download generated reports, and notify your team when work finishes.
 
-## Highlights
+It is built for internal SRE teams that want an agentic workflow they can run, audit, and extend inside their own environment.
 
-- Multi-AgentSpace management with isolated model config, environment variables, integrations, and records.
-- Chat conversations backed by ADK turn execution.
-- Manual tasks, approval-aware tasks, and scheduled automations.
-- Chain287 read-only inspection skills and report artifact generation.
-- Gemini and Gemini-compatible relay support.
-- Enterprise WeChat notifications and an optional agent system tool.
-- File-backed storage using YAML, JSONL, Markdown, uploaded files, and generated artifacts.
-- All-in-one Docker image that serves the frontend and backend from one process.
+## What You Can Do
 
-## Architecture
+- Create isolated AgentSpaces for different operators or environments.
+- Ask questions about system status and operational health.
+- Run manual tasks with complete execution history.
+- Schedule recurring inspections and report generation.
+- Review artifacts produced by skills and automation runs.
+- Send automation results and approval prompts to Enterprise WeChat.
+- Use direct Gemini or a Gemini-compatible relay gateway.
 
-```text
-React UI
-  |
-  | /api/v1 JSON
-  v
-Go agent server
-  |
-  +-- File store for AgentSpaces, tasks, automations, records, documents, artifacts
-  +-- Google ADK-Go runner
-  +-- Skill runner for Chain287 inspection tools
-  +-- Enterprise WeChat notification client
-  |
-  v
-Gemini or Gemini relay
-```
+## Use Cases
 
-See [Architecture](docs/architecture.md) for details.
+- Daily inspection reports.
+- Service and infrastructure health checks.
+- Endpoint status and operational summary checks.
+- Scheduled operational summaries.
+- Task-level audit trails for agent work.
+- Team notifications with direct links back to task details.
 
 ## Quick Start
 
@@ -73,7 +63,7 @@ Use the Admin UI to create an AgentSpace and configure:
 
 - LLM provider and model.
 - API key or relay API key.
-- `CHAIN287_RPC_URL`.
+- Runtime environment variables required by your skills.
 - Optional Enterprise WeChat webhook.
 
 ## Docker Compose
@@ -106,6 +96,14 @@ http://localhost:8080
 
 See [Deployment](docs/deployment.md) for production notes.
 
+## Core Concepts
+
+- **AgentSpace**: an isolated workspace with model settings, runtime variables, integrations, conversations, tasks, automations, and artifacts.
+- **Task**: a unit of agent work with records, status, output, and artifacts.
+- **Automation**: a schedule that creates and runs tasks automatically.
+- **Skill**: a declared operational capability the agent can call, such as read-only health checks or report generation.
+- **Artifact**: a generated report or file saved by a task.
+
 ## Model Providers
 
 Direct Gemini:
@@ -130,6 +128,27 @@ llm:
 `baseUrl` must be the relay root URL. Do not include `/v1beta`.
 
 LLM config is AgentSpace-scoped. Application runtime config belongs in `agent-server/config/app.yaml`.
+
+## Architecture
+
+NetX AI packages the UI and backend into one self-hosted service.
+
+```text
+Browser UI
+  |
+  | /api/v1 JSON
+  v
+Agent server
+  |
+  +-- AgentSpaces, tasks, automations, records, documents, artifacts
+  +-- Agent runtime and skill execution
+  +-- Enterprise WeChat notifications
+  |
+  v
+Gemini or Gemini relay
+```
+
+See [Architecture](docs/architecture.md) for details.
 
 ## Documentation
 
@@ -178,7 +197,7 @@ npm run build
 ## Security Notes
 
 - Do not commit `agent-server/config/app.yaml`.
-- Do not commit model API keys, Enterprise WeChat webhook URLs, or private RPC endpoints.
+- Do not commit model API keys, Enterprise WeChat webhook URLs, or private service endpoints.
 - Enable Basic auth outside local development.
 - Back up `agent-server/data/agents` before upgrades.
 - Review new skills before enabling them in production.

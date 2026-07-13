@@ -1,6 +1,6 @@
 # Architecture
 
-NetX AI is an all-in-one self-hosted agent workspace for Chain287 SRE operations.
+NetX AI is an all-in-one self-hosted agent workspace for SRE operations.
 
 It combines a Go backend, a React frontend, file-backed persistence, Google ADK-Go based model execution, and a skill runner for operational tools. The default deployment packages the frontend and backend into one container.
 
@@ -31,7 +31,7 @@ Skill runner
   |
   | read-only scripts and tools
   v
-Chain287 RPC and local command runtime
+External systems and local command runtime
 
 Go agent server
   |
@@ -96,11 +96,7 @@ For `gemini-relay`, `baseUrl` must be the relay root URL. Do not include `/v1bet
 
 Skills live under `agent-server/skills`. The ADK agent discovers skill instructions and invokes `execute_skill_action`, which dispatches to the Go skill runner.
 
-The current skill set focuses on read-only Chain287 inspection:
-
-- `chain287-chain-query`
-- `chain287-validator-health`
-- `chain287-sre-inspection-report`
+The bundled skill set is an example of read-only infrastructure inspection and report generation. Teams can add or replace skills for their own systems.
 
 Skill-declared artifacts are persisted by the backend so the UI can display and download them.
 

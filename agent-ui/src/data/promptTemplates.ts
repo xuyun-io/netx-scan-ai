@@ -97,7 +97,7 @@ export const recentItems = ['Validator Health Report'];
 
 export const resourceColumns: Record<Exclude<WorkspaceView, 'chat'>, ResourceColumn[]> = {
   tasks: [
-    { id: 'name', label: 'Task name', width: 'minmax(240px, 1.4fr)' },
+    { id: 'name', label: 'Task name', width: 'minmax(420px, 1.8fr)' },
     { id: 'status', label: 'Status', width: '150px' },
     { id: 'priority', label: 'Priority', width: '130px' },
     { id: 'type', label: 'Type', width: '150px' },

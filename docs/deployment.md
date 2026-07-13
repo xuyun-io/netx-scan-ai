@@ -47,7 +47,7 @@ The image contains:
 - `/app/netx-sre-agent`: Go server binary.
 - `/app/web/dist`: built frontend.
 - `/app/skills`: bundled skills.
-- `/usr/local/bin/cast`: Foundry `cast` binary for Chain287 RPC skills.
+- Additional command-line tools required by bundled example skills.
 
 The Compose file mounts:
 
@@ -64,9 +64,9 @@ Before exposing the service to users:
 - Use `logFormat: json`.
 - Back up `agent-server/data/agents`.
 - Do not commit `agent-server/config/app.yaml`.
-- Do not commit real API keys, webhook URLs, or private RPC endpoints.
+- Do not commit real API keys, webhook URLs, or private service endpoints.
 - Put the service behind HTTPS when reachable outside a trusted network.
-- Confirm Chain287 RPC endpoints are reachable from the container.
+- Confirm external endpoints required by your skills are reachable from the container.
 - Confirm scheduled automation notifications include valid task links.
 
 ## Kubernetes

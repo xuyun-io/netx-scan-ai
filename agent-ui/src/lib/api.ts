@@ -101,10 +101,92 @@ export interface ToolCallRecord {
 
 export interface ToolResultRecord {
   output: string;
+  rawResultRef?: string;
   toolUseId: string;
   skill?: string;
   action?: string;
   isError: boolean;
+}
+
+export interface LocalToolTrace {
+  version: string;
+  ref?: string;
+  invocationId: string;
+  functionCallId: string;
+  toolName: string;
+  request?: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  error?: string;
+  rawBytes: number;
+  modelBytes?: number;
+  createdAt: string;
+}
+
+export interface TraceScope {
+  agentSpaceName: string;
+  taskId?: string;
+  sessionId?: string;
+  conversationId?: string;
+  turnId?: string;
+  source?: string;
+}
+
+export interface ModelCallTrace {
+  sequence: number;
+  eventId?: string;
+  model?: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMillis?: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  toolUseInputTokens?: number;
+  reasoningTokens: number;
+  totalOutputTokens?: number;
+  totalTokens?: number;
+  finishReason?: string;
+  functionCallIds?: string[];
+  timestamp: string;
+}
+
+export interface ToolTraceSummary extends Omit<LocalToolTrace, 'request' | 'response'> {
+  skill?: string;
+  action?: string;
+  status?: string;
+  modelBytes?: number;
+  startedAt: string;
+  completedAt: string;
+  durationMillis: number;
+  scope: TraceScope;
+}
+
+export interface InvocationSummary {
+  version: string;
+  scope: TraceScope;
+  invocationId: string;
+  status: string;
+  startedAt: string;
+  completedAt?: string;
+  durationMillis: number;
+  modelCalls: ModelCallTrace[];
+  modelCallCount: number;
+  toolCallCount: number;
+  errorCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  toolUseInputTokens?: number;
+  reasoningTokens: number;
+  totalOutputTokens?: number;
+  totalTokens?: number;
+  rawToolBytes: number;
+  modelToolBytes: number;
+}
+
+export interface InvocationTrace {
+  summary: InvocationSummary;
+  tools: ToolTraceSummary[];
 }
 
 export interface LoadSkillRecord {
@@ -428,6 +510,22 @@ export function listRecords(input: {
     maxResults: 100,
     ...input,
   });
+}
+
+export function getLocalToolTrace(agentSpaceName: string, ref: string) {
+  return post<{ trace: LocalToolTrace }>('/getLocalToolTrace', {
+    agentSpaceName,
+    ref,
+  });
+}
+
+export function findInvocationTraces(input: {
+  agentSpaceName: string;
+  taskId?: string;
+  conversationId?: string;
+  turnId?: string;
+}) {
+  return post<{ traces: InvocationTrace[] }>('/findInvocationTraces', input);
 }
 
 export function listArtifacts(agentSpaceName: string) {

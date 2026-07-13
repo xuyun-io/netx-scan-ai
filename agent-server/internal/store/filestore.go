@@ -869,13 +869,13 @@ func readJSONL[T any](path string) ([]T, error) {
 }
 
 func titleFromInstruction(instruction string) string {
-	instruction = strings.TrimSpace(instruction)
+	instruction = strings.Join(strings.Fields(instruction), " ")
 	if instruction == "" {
 		return "未命名任务"
 	}
 	runes := []rune(instruction)
-	if len(runes) > 36 {
-		return string(runes[:36]) + "..."
+	if len(runes) > 96 {
+		return string(runes[:96]) + "..."
 	}
 	return instruction
 }

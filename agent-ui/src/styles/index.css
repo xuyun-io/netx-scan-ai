@@ -11,10 +11,30 @@
     sans-serif;
   background: #111821;
   color: #d7dce6;
+  --surface-card: #121922;
+  --surface-raised: #0d151c;
+  --border-default: #222b36;
+  --text-primary: #dce5ed;
+  --text-secondary: #a9b4bf;
+  --text-muted: #71808e;
+  --accent-action: #8f82ff;
+  --accent-action-hover: #aaa2ff;
+  --trace-model: #d7a04e;
+  --trace-tool: #55c6a8;
+  --status-running: #73b7ff;
+  --status-success: #10c957;
+  --status-error: #ef746b;
   font-synthesis: none;
   text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-gradient-title,
+  .animate-progress {
+    animation: none;
+  }
 }
 
 * {

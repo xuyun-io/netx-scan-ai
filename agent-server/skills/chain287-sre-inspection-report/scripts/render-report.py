@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import base64
 import html
 import json
 import os
@@ -39,278 +38,68 @@ def read_template():
     return Path(__file__).resolve().parents[1].joinpath("assets", "report-template.html").read_text(encoding="utf-8")
 
 
-def parse_payload(raw):
-    env_b64 = os.getenv("REPORT_JSON_B64", "").strip()
-    env_raw = os.getenv("REPORT_JSON", "").strip()
-    raw = env_raw or raw.strip()
-    if env_b64:
-        raw = base64.b64decode(env_b64).decode("utf-8")
-    if raw.startswith("base64:"):
-        raw = base64.b64decode(raw[len("base64:"):]).decode("utf-8")
-    if not raw:
+def parse_trace_payload(report_ref):
+    """Load upstream SkillOutputs from one locally persisted ADK invocation."""
+    trace_root = os.getenv("NETX_LOCAL_TRACE_DIR", "").strip()
+    report_ref = (report_ref or "").strip().replace("\\", "/")
+    if not trace_root or not report_ref:
         return None
-    return json.loads(raw)
 
+    # Accept either the short traceRef or a rawResultRef from any tool result.
+    invocation_ref = report_ref.split("/", 1)[0]
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", invocation_ref):
+        raise ValueError("report_ref 格式无效")
 
-def sample_payload():
-    """A realistic, business-oriented inspection payload used to debug the report pipeline.
+    root = Path(trace_root).resolve()
+    invocation_dir = (root / invocation_ref).resolve()
+    if root not in invocation_dir.parents:
+        raise ValueError("report_ref 超出本地 trace 目录")
+    tools_dir = invocation_dir / "tools"
+    if not tools_dir.is_dir():
+        raise FileNotFoundError(f"未找到 report_ref 对应的工具结果：{invocation_ref}")
 
-    Covers the full daily SRE workflow:
-      - chain basics & RPC health
-      - block production analytics
-      - validator set overview
-      - validator performance & jail status
-      - validator economics & window stats
+    allowed_skills = {"chain287-chain-query", "chain287-validator-health"}
+    collected = {}
+    for path in sorted(tools_dir.glob("*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        response = record.get("response") or {}
+        if isinstance(response.get("result"), dict):
+            response = response["result"]
+        skill = response.get("skill")
+        action = response.get("action")
+        output = response.get("output")
+        if skill not in allowed_skills or not action or not isinstance(output, dict):
+            continue
+        collected[(skill, action)] = {
+            "skill": skill,
+            "action": action,
+            "output": output,
+        }
 
-    The field names mirror the real upstream SkillOutput shapes so the report
-    accurately reflects what render_report will receive in production.
-    """
-    validators_overview = [
-        {"moniker": "Validv1", "operator": "0x1111111111111111111111111111111111111111", "consensus": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "creditContract": "0xc111111111111111111111111111111111111111", "active": True, "status": "active", "createdTime": 1704067200, "jailed": False, "jailUntil": 0, "jailRemainingSeconds": 0, "recentBlocks": 13, "recentBlockSharePercent": 13.0, "totalPoolNetx": 2150.75, "selfPooledNetx": 2000.0, "operatorBalanceNetx": 12.4567, "consensusBalanceNetx": 1.2345, "pendingUnbondRequests": 0, "claimableUnbondRequests": 0},
-        {"moniker": "Validv2", "operator": "0x2222222222222222222222222222222222222222", "consensus": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "creditContract": "0xc222222222222222222222222222222222222222", "active": True, "status": "active", "createdTime": 1704067200, "jailed": False, "jailUntil": 0, "jailRemainingSeconds": 0, "recentBlocks": 12, "recentBlockSharePercent": 12.0, "totalPoolNetx": 2103.5, "selfPooledNetx": 2000.0, "operatorBalanceNetx": 11.8234, "consensusBalanceNetx": 1.1234, "pendingUnbondRequests": 0, "claimableUnbondRequests": 0},
-        {"moniker": "Validv3", "operator": "0x3333333333333333333333333333333333333333", "consensus": "0xcccccccccccccccccccccccccccccccccccccccc", "creditContract": "0xc333333333333333333333333333333333333333", "active": True, "status": "active", "createdTime": 1704067200, "jailed": False, "jailUntil": 0, "jailRemainingSeconds": 0, "recentBlocks": 14, "recentBlockSharePercent": 14.0, "totalPoolNetx": 2089.0, "selfPooledNetx": 2000.0, "operatorBalanceNetx": 13.1022, "consensusBalanceNetx": 1.3456, "pendingUnbondRequests": 0, "claimableUnbondRequests": 0},
-        {"moniker": "Validv4", "operator": "0x4444444444444444444444444444444444444444", "consensus": "0xdddddddddddddddddddddddddddddddddddddddd", "creditContract": "0xc444444444444444444444444444444444444444", "active": True, "status": "low_blocks", "createdTime": 1704067200, "jailed": False, "jailUntil": 0, "jailRemainingSeconds": 0, "recentBlocks": 4, "recentBlockSharePercent": 4.0, "totalPoolNetx": 2001.23, "selfPooledNetx": 2000.0, "operatorBalanceNetx": 9.8123, "consensusBalanceNetx": 0.9876, "pendingUnbondRequests": 0, "claimableUnbondRequests": 0},
-        {"moniker": "Validv5", "operator": "0x5555555555555555555555555555555555555555", "consensus": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "creditContract": "0xc555555555555555555555555555555555555555", "active": True, "status": "active", "createdTime": 1704067200, "jailed": False, "jailUntil": 0, "jailRemainingSeconds": 0, "recentBlocks": 11, "recentBlockSharePercent": 11.0, "totalPoolNetx": 2120.0, "selfPooledNetx": 2000.0, "operatorBalanceNetx": 10.55, "consensusBalanceNetx": 1.055, "pendingUnbondRequests": 0, "claimableUnbondRequests": 0},
-        {"moniker": "Validv6", "operator": "0x6666666666666666666666666666666666666666", "consensus": "0xffffffffffffffffffffffffffffffffffffffff", "creditContract": "0xc666666666666666666666666666666666666666", "active": True, "status": "active", "createdTime": 1704067200, "jailed": False, "jailUntil": 0, "jailRemainingSeconds": 0, "recentBlocks": 12, "recentBlockSharePercent": 12.0, "totalPoolNetx": 2095.25, "selfPooledNetx": 2000.0, "operatorBalanceNetx": 14.0, "consensusBalanceNetx": 1.2, "pendingUnbondRequests": 0, "claimableUnbondRequests": 0},
-        {"moniker": "Validv7", "operator": "0x7777777777777777777777777777777777777777", "consensus": "0x7777777777777777777777777777777777777777", "creditContract": "0xc777777777777777777777777777777777777777", "active": False, "status": "missing_blocks", "createdTime": 1704067200, "jailed": False, "jailUntil": 0, "jailRemainingSeconds": 0, "recentBlocks": 0, "recentBlockSharePercent": 0.0, "totalPoolNetx": 1980.0, "selfPooledNetx": 2000.0, "operatorBalanceNetx": 8.5, "consensusBalanceNetx": 0.5, "pendingUnbondRequests": 0, "claimableUnbondRequests": 0},
-        {"moniker": "Validv8", "operator": "0x8888888888888888888888888888888888888888", "consensus": "0x8888888888888888888888888888888888888888", "creditContract": "0xc888888888888888888888888888888888888888", "active": False, "status": "jailed", "createdTime": 1704067200, "jailed": True, "jailUntil": 1893456000, "jailRemainingSeconds": 123456789, "recentBlocks": 0, "recentBlockSharePercent": 0.0, "totalPoolNetx": 2000.0, "selfPooledNetx": 2000.0, "operatorBalanceNetx": 15.2, "consensusBalanceNetx": 0.0, "pendingUnbondRequests": 0, "claimableUnbondRequests": 0},
-    ]
-    validators_block_stats = [
-        {"consensus": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "operator": "0x1111111111111111111111111111111111111111", "blocks": 13, "expected": 12.5, "sharePercent": 13.0, "status": "ok"},
-        {"consensus": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "operator": "0x2222222222222222222222222222222222222222", "blocks": 12, "expected": 12.5, "sharePercent": 12.0, "status": "ok"},
-        {"consensus": "0xcccccccccccccccccccccccccccccccccccccccc", "operator": "0x3333333333333333333333333333333333333333", "blocks": 14, "expected": 12.5, "sharePercent": 14.0, "status": "ok"},
-        {"consensus": "0xdddddddddddddddddddddddddddddddddddddddd", "operator": "0x4444444444444444444444444444444444444444", "blocks": 4, "expected": 12.5, "sharePercent": 4.0, "status": "low"},
-        {"consensus": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "operator": "0x5555555555555555555555555555555555555555", "blocks": 11, "expected": 12.5, "sharePercent": 11.0, "status": "ok"},
-        {"consensus": "0xffffffffffffffffffffffffffffffffffffffff", "operator": "0x6666666666666666666666666666666666666666", "blocks": 12, "expected": 12.5, "sharePercent": 12.0, "status": "ok"},
-        {"consensus": "0x7777777777777777777777777777777777777777", "operator": "0x7777777777777777777777777777777777777777", "blocks": 0, "expected": 12.5, "sharePercent": 0.0, "status": "missing"},
-        {"consensus": "0x8888888888888888888888888888888888888888", "operator": "0x8888888888888888888888888888888888888888", "blocks": 0, "expected": 12.5, "sharePercent": 0.0, "status": "missing"},
-    ]
-    validators_rewards = [
-        {"operator": "0x1111111111111111111111111111111111111111", "consensus": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "creditContract": "0xc111111111111111111111111111111111111111", "poolTotal": 2150.75, "rewards": 150.75},
-        {"operator": "0x2222222222222222222222222222222222222222", "consensus": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "creditContract": "0xc222222222222222222222222222222222222222", "poolTotal": 2103.5, "rewards": 103.5},
-        {"operator": "0x3333333333333333333333333333333333333333", "consensus": "0xcccccccccccccccccccccccccccccccccccccccc", "creditContract": "0xc333333333333333333333333333333333333333", "poolTotal": 2089.0, "rewards": 89.0},
-        {"operator": "0x4444444444444444444444444444444444444444", "consensus": "0xdddddddddddddddddddddddddddddddddddddddd", "creditContract": "0xc444444444444444444444444444444444444444", "poolTotal": 2001.23, "rewards": 1.23},
-        {"operator": "0x5555555555555555555555555555555555555555", "consensus": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "creditContract": "0xc555555555555555555555555555555555555555", "poolTotal": 2120.0, "rewards": 120.0},
-        {"operator": "0x6666666666666666666666666666666666666666", "consensus": "0xffffffffffffffffffffffffffffffffffffffff", "creditContract": "0xc666666666666666666666666666666666666666", "poolTotal": 2095.25, "rewards": 95.25},
-        {"operator": "0x7777777777777777777777777777777777777777", "consensus": "0x7777777777777777777777777777777777777777", "creditContract": "0xc777777777777777777777777777777777777777", "poolTotal": 1980.0, "rewards": 0.0},
-        {"operator": "0x8888888888888888888888888888888888888888", "consensus": "0x8888888888888888888888888888888888888888", "creditContract": "0xc888888888888888888888888888888888888888", "poolTotal": 2000.0, "rewards": 0.0},
-    ]
-    validators_jailed = [
-        {"operator": "0x1111111111111111111111111111111111111111", "consensus": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "active", "reason": "in active validator set"},
-        {"operator": "0x2222222222222222222222222222222222222222", "consensus": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "status": "active", "reason": "in active validator set"},
-        {"operator": "0x3333333333333333333333333333333333333333", "consensus": "0xcccccccccccccccccccccccccccccccccccccccc", "status": "active", "reason": "in active validator set"},
-        {"operator": "0x4444444444444444444444444444444444444444", "consensus": "0xdddddddddddddddddddddddddddddddddddddddd", "status": "active", "reason": "in active validator set"},
-        {"operator": "0x5555555555555555555555555555555555555555", "consensus": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "status": "active", "reason": "in active validator set"},
-        {"operator": "0x6666666666666666666666666666666666666666", "consensus": "0xffffffffffffffffffffffffffffffffffffffff", "status": "active", "reason": "in active validator set"},
-        {"operator": "0x7777777777777777777777777777777777777777", "consensus": "0x7777777777777777777777777777777777777777", "status": "not_in_set", "reason": "registered but not in current validator set"},
-        {"operator": "0x8888888888888888888888888888888888888888", "consensus": "0x8888888888888888888888888888888888888888", "status": "jailed", "reason": "validator is jailed"},
-    ]
-    validators_window = [
-        {"moniker": "Validv1", "operator": "0x1111111111111111111111111111111111111111", "consensus": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "active": True, "status": "ok", "blocks": 13, "sharePercent": 13.0, "txsInMinedBlocks": 5, "gasUsedInMinedBlocks": 250000, "operatorBalanceFromNetx": 12.4555, "operatorBalanceToNetx": 12.4567, "operatorBalanceDeltaNetx": 0.0012},
-        {"moniker": "Validv2", "operator": "0x2222222222222222222222222222222222222222", "consensus": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "active": True, "status": "ok", "blocks": 12, "sharePercent": 12.0, "txsInMinedBlocks": 3, "gasUsedInMinedBlocks": 150000, "operatorBalanceFromNetx": 11.8223, "operatorBalanceToNetx": 11.8234, "operatorBalanceDeltaNetx": 0.0011},
-        {"moniker": "Validv3", "operator": "0x3333333333333333333333333333333333333333", "consensus": "0xcccccccccccccccccccccccccccccccccccccccc", "active": True, "status": "ok", "blocks": 14, "sharePercent": 14.0, "txsInMinedBlocks": 7, "gasUsedInMinedBlocks": 350000, "operatorBalanceFromNetx": 13.1007, "operatorBalanceToNetx": 13.1022, "operatorBalanceDeltaNetx": 0.0015},
-        {"moniker": "Validv4", "operator": "0x4444444444444444444444444444444444444444", "consensus": "0xdddddddddddddddddddddddddddddddddddddddd", "active": True, "status": "low_blocks", "blocks": 4, "sharePercent": 4.0, "txsInMinedBlocks": 1, "gasUsedInMinedBlocks": 50000, "operatorBalanceFromNetx": 9.8119, "operatorBalanceToNetx": 9.8123, "operatorBalanceDeltaNetx": 0.0004},
-        {"moniker": "Validv5", "operator": "0x5555555555555555555555555555555555555555", "consensus": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "active": True, "status": "ok", "blocks": 11, "sharePercent": 11.0, "txsInMinedBlocks": 2, "gasUsedInMinedBlocks": 100000, "operatorBalanceFromNetx": 10.549, "operatorBalanceToNetx": 10.55, "operatorBalanceDeltaNetx": 0.0010},
-        {"moniker": "Validv6", "operator": "0x6666666666666666666666666666666666666666", "consensus": "0xffffffffffffffffffffffffffffffffffffffff", "active": True, "status": "ok", "blocks": 12, "sharePercent": 12.0, "txsInMinedBlocks": 4, "gasUsedInMinedBlocks": 200000, "operatorBalanceFromNetx": 13.9987, "operatorBalanceToNetx": 14.0, "operatorBalanceDeltaNetx": 0.0013},
-    ]
-    active_validator_addresses = [v["consensus"] for v in validators_overview if v["status"] not in {"jailed", "not_in_set"}]
+    if not collected:
+        raise ValueError("report_ref 中没有可用于巡检报告的 SkillOutput")
 
-    return [
-        {
-            "skill": "chain287-chain-query",
-            "action": "chain_health",
-            "output": {
-                "version": "1.0",
-                "status": "partial",
-                "message": "RPC 可访问，但发现 1 个验证者未出块、1 个验证者被 jail。",
-                "data": {
-                    "sampledBlocks": 100,
-                    "checks": {
-                        "rpcAlive": {"ok": True, "latencyMs": 45},
-                        "latestBlock": {"blockNumber": 346300, "blockAgeSeconds": 3},
-                        "blockInterval": {"average": 3.0, "max": 6},
-                        "peerCount": 11,
-                        "activeValidators": {"count": 6, "validators": active_validator_addresses},
-                    },
-                },
-                "metadata": {"source": "cast ...", "timestamp": "2026-07-09T08:30:00Z"},
-            },
-        },
-        {
-            "skill": "chain287-chain-query",
-            "action": "rpc_snapshot",
-            "output": {
-                "version": "1.0",
-                "status": "ok",
-                "message": "RPC 节点快照读取成功。",
-                "data": {
-                    "chainId": 287,
-                    "latestBlock": 346300,
-                    "latestHash": "0xabc123...",
-                    "latestMiner": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "latestTxCount": 3,
-                    "blockAgeSeconds": 3,
-                    "peerCount": 11,
-                    "syncing": False,
-                    "gasPriceWei": "5000000000",
-                    "gasPriceGwei": 5.0,
-                    "genesisHash": "0xdef456...",
-                    "latencyMs": 45,
-                    "chainMode": {"mode": "validator_set", "transferGasLimit": 0, "activeValidatorCount": 6, "activeValidators": active_validator_addresses},
-                    "warnings": [],
-                },
-                "metadata": {"source": "cast ...", "timestamp": "2026-07-09T08:30:00Z"},
-            },
-        },
-        {
-            "skill": "chain287-chain-query",
-            "action": "recent_blocks",
-            "output": {
-                "version": "1.0",
-                "status": "ok",
-                "message": "最近 100 个块分析完成。",
-                "data": {
-                    "latestBlock": 346300,
-                    "sampledBlocks": 100,
-                    "averageInterval": 3.02,
-                    "maxInterval": 6,
-                    "totalTxs": 45,
-                    "totalGasUsed": 2100000,
-                    "minerDistribution": {
-                        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": 13,
-                        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": 12,
-                        "0xcccccccccccccccccccccccccccccccccccccccc": 14,
-                        "0xdddddddddddddddddddddddddddddddddddddddd": 4,
-                        "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": 11,
-                        "0xffffffffffffffffffffffffffffffffffffffff": 12,
-                    },
-                    "unknownMiners": {},
-                },
-                "metadata": {"source": "cast ...", "timestamp": "2026-07-09T08:30:00Z"},
-            },
-        },
-        {
-            "skill": "chain287-chain-query",
-            "action": "active_validators",
-            "output": {
-                "version": "1.0",
-                "status": "ok",
-                "message": "当前活跃验证者集合读取成功。",
-                "data": {
-                    "count": 6,
-                    "validators": active_validator_addresses,
-                },
-                "metadata": {"source": "cast ...", "timestamp": "2026-07-09T08:30:00Z"},
-            },
-        },
-        {
-            "skill": "chain287-validator-health",
-            "action": "validator_overview",
-            "output": {
-                "version": "1.0",
-                "status": "partial",
-                "message": "发现 1 个验证者出块偏低、1 个验证者未出块、1 个验证者被 jail。",
-                "data": {
-                    "latestBlock": 346300,
-                    "sampledBlocks": 80,
-                    "expectedBlocksPerActiveValidator": 12.5,
-                    "registeredCount": 8,
-                    "registeredTotalLength": 8,
-                    "activeCount": 6,
-                    "jailedCount": 1,
-                    "notInSetCount": 1,
-                    "blockAnomalyCount": 2,
-                    "validators": validators_overview,
-                },
-                "metadata": {"source": "cast ...", "timestamp": "2026-07-09T08:30:00Z"},
-            },
-        },
-        {
-            "skill": "chain287-validator-health",
-            "action": "validator_block_stats",
-            "output": {
-                "version": "1.0",
-                "status": "partial",
-                "message": "最近 100 块统计完成：2 个验证者出块异常。",
-                "data": {
-                    "latestBlock": 346300,
-                    "sampledBlocks": 100,
-                    "validatorCount": 8,
-                    "expectedPerValidator": 12.5,
-                    "validators": validators_block_stats,
-                    "unknownMiners": {},
-                },
-                "metadata": {"source": "cast ...", "timestamp": "2026-07-09T08:30:00Z"},
-            },
-        },
-        {
-            "skill": "chain287-validator-health",
-            "action": "validator_rewards",
-            "output": {
-                "version": "1.0",
-                "status": "ok",
-                "message": "8 个验证者的累计收益读取成功。",
-                "data": {
-                    "validatorCount": 8,
-                    "totalRewards": 559.73,
-                    "validators": validators_rewards,
-                },
-                "metadata": {"source": "cast ...", "timestamp": "2026-07-09T08:30:00Z"},
-            },
-        },
-        {
-            "skill": "chain287-validator-health",
-            "action": "validator_jailed_status",
-            "output": {
-                "version": "1.0",
-                "status": "partial",
-                "message": "1 个验证者被 jail，1 个验证者未入集。",
-                "data": {
-                    "totalCount": 8,
-                    "activeCount": 6,
-                    "jailedCount": 1,
-                    "notInSetCount": 1,
-                    "validators": validators_jailed,
-                },
-                "metadata": {"source": "cast ...", "timestamp": "2026-07-09T08:30:00Z"},
-            },
-        },
-        {
-            "skill": "chain287-validator-health",
-            "action": "validator_window_stats",
-            "output": {
-                "version": "1.0",
-                "status": "ok",
-                "message": "最近 5 分钟窗口统计完成。",
-                "data": {
-                    "summary": {
-                        "fromBlock": 346200,
-                        "toBlock": 346300,
-                        "fromTimestamp": 1720502400,
-                        "toTimestamp": 1720502700,
-                        "elapsedSeconds": 300,
-                        "requestedWindowSeconds": 300,
-                        "sampledBlocks": 100,
-                        "activeValidatorCount": 6,
-                        "registeredCount": 8,
-                        "registeredTotalLength": 8,
-                        "expectedBlocksPerActiveValidator": 16.67,
-                        "totalTxs": 45,
-                        "totalGasUsed": 2100000,
-                        "averageInterval": 3.0,
-                        "medianInterval": 3.0,
-                        "maxInterval": 6,
-                        "missingBlockValidators": 2,
-                        "lowBlockValidators": 1,
-                        "unknownMiners": {},
-                        "notes": [],
-                    },
-                    "validators": validators_window,
-                },
-                "metadata": {"source": "cast ...", "timestamp": "2026-07-09T08:30:00Z"},
-            },
-        },
+    action_order = [
+        ("chain287-chain-query", "rpc_snapshot"),
+        ("chain287-chain-query", "chain_health"),
+        ("chain287-chain-query", "recent_blocks"),
+        ("chain287-chain-query", "active_validators"),
+        ("chain287-validator-health", "validator_overview"),
+        ("chain287-validator-health", "validator_block_stats"),
+        ("chain287-validator-health", "validator_rewards"),
+        ("chain287-validator-health", "validator_jailed_status"),
+        ("chain287-validator-health", "validator_window_stats"),
     ]
+
+    missing = [f"{skill}/{action}" for skill, action in action_order if (skill, action) not in collected]
+    if missing:
+        raise ValueError(
+            "巡检数据不完整，禁止生成部分报告。请先执行以下真实 action：" + ", ".join(missing)
+        )
+
+    ordered = [collected.pop(key) for key in action_order if key in collected]
+    ordered.extend(collected[key] for key in sorted(collected))
+    return ordered
 
 
 def unwrap_output(item):
@@ -867,21 +656,19 @@ def safe_filename(title):
 
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "render_report"
-    raw = sys.argv[2] if len(sys.argv) > 2 else ""
-    title = (sys.argv[3] if len(sys.argv) > 3 else "").strip() or "Chain287 区块链 SRE 巡检报告"
-    scope = (sys.argv[4] if len(sys.argv) > 4 else "").strip() or "Chain287 / RPC / Validator"
-    notes = (sys.argv[5] if len(sys.argv) > 5 else "").strip() or "本报告由 Agent Skill 根据只读巡检结果自动生成。"
+    report_ref = sys.argv[3] if len(sys.argv) > 3 else ""
+    title = (sys.argv[4] if len(sys.argv) > 4 else "").strip() or "Chain287 区块链 SRE 巡检报告"
+    scope = (sys.argv[5] if len(sys.argv) > 5 else "").strip() or "Chain287 / RPC / Validator"
+    notes = (sys.argv[6] if len(sys.argv) > 6 else "").strip() or "本报告由 Agent Skill 根据只读巡检结果自动生成。"
 
-    if action == "sample_report":
-        payload = sample_payload()
-    elif action == "render_report":
+    if action == "render_report":
         try:
-            payload = parse_payload(raw)
+            payload = parse_trace_payload(report_ref)
         except Exception as exc:
-            error("INVALID_REPORT_JSON", f"report_json 不是合法 JSON: {exc}")
+            error("INVALID_REPORT_INPUT", f"无法读取巡检报告输入: {exc}")
             return
         if payload is None:
-            error("MISSING_REPORT_JSON", "render_report 需要 report_json，或使用 sample_report 调试产物链路")
+            error("MISSING_REPORT_INPUT", "render_report 需要当前真实巡检 invocation 的 report_ref；不允许样板或手工数据")
             return
     else:
         error("UNKNOWN_ACTION", f"unknown action: {action}")

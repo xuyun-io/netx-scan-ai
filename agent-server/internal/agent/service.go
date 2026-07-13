@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/localtrace"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/model"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/notify"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/skills"
@@ -21,6 +22,7 @@ import (
 	adkartifact "google.golang.org/adk/v2/artifact"
 	adkmodel "google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/model/gemini"
+	adkplugin "google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/runner"
 	adksession "google.golang.org/adk/v2/session"
 	adktool "google.golang.org/adk/v2/tool"
@@ -38,6 +40,7 @@ type Service struct {
 	automationNotifier automationTaskNotifier
 	wecomClient        notify.WeComClient
 	modelFactory       func(context.Context, model.LLMConfig, model.EnvVars) (adkmodel.LLM, error)
+	localTraceRepo     localtrace.Repository
 	taskCancels        map[string]context.CancelFunc
 	mu                 sync.Mutex
 }
@@ -66,6 +69,7 @@ func NewService(store *store.Store, publicURL, skillsDir string) *Service {
 		automationNotifier: wecomClient,
 		wecomClient:        wecomClient,
 		modelFactory:       newGeminiModel,
+		localTraceRepo:     localtrace.NewFileRepository(store.Root()),
 	}
 }
 
@@ -428,24 +432,6 @@ func (s *Service) ExecuteTask(agentSpaceName, taskID string) {
 	if latest, err := s.store.GetTask(ctx, agentSpaceName, taskID); err == nil {
 		task = latest
 	}
-	result := renderADKTaskArtifact(task, response)
-	artifact, err := s.store.CreateArtifact(ctx, model.Artifact{
-		AgentSpaceName: agentSpaceName,
-		TaskID:         taskID,
-		Name:           fmt.Sprintf("%s-result.md", task.ID),
-		Type:           "Markdown",
-	}, []byte(result))
-	if err == nil {
-		task.Artifacts = append(task.Artifacts, artifact.ID)
-	}
-	_ = s.store.AppendTaskRecord(ctx, model.Record{
-		ID:             store.NewRecordID(),
-		AgentSpaceName: agentSpaceName,
-		TaskID:         taskID,
-		Type:           model.RecordToolResult,
-		Content:        "已生成第一版 Markdown 执行结果 artifact。",
-		CreatedAt:      time.Now().UTC(),
-	})
 	completedAt := time.Now().UTC()
 	task.Status = model.StatusCompleted
 	task.CompletedAt = &completedAt
@@ -534,7 +520,13 @@ func (s *Service) processTurn(turn model.Turn) {
 }
 
 func (s *Service) runADKTurn(ctx context.Context, turn model.Turn) (string, error) {
-	return s.runADKPrompt(ctx, turn.AgentSpaceName, turn.ConversationID, "", turn.Prompt, func(event *adksession.Event) {
+	return s.runADKPrompt(ctx, RunScope{
+		AgentSpaceName: turn.AgentSpaceName,
+		SessionID:      turn.ConversationID,
+		ConversationID: turn.ConversationID,
+		TurnID:         turn.ID,
+		Source:         "chat",
+	}, turn.Prompt, func(event *adksession.Event) {
 		s.appendADKEventRecord(ctx, turn, event)
 	})
 }
@@ -544,12 +536,29 @@ func (s *Service) runADKTask(ctx context.Context, task model.Task) (string, erro
 	if task.ConversationID != "" {
 		sessionID = task.ConversationID
 	}
-	return s.runADKPrompt(ctx, task.AgentSpaceName, sessionID, task.ID, task.Instruction, func(event *adksession.Event) {
+	return s.runADKPrompt(ctx, RunScope{
+		AgentSpaceName: task.AgentSpaceName,
+		SessionID:      sessionID,
+		TaskID:         task.ID,
+		ConversationID: task.ConversationID,
+		TurnID:         task.TurnID,
+		Source:         task.Source,
+	}, task.Instruction, func(event *adksession.Event) {
 		s.appendADKTaskEventRecord(ctx, task, event)
 	})
 }
 
-func (s *Service) runADKPrompt(ctx context.Context, agentSpaceName, sessionID, taskID, prompt string, recordEvent func(*adksession.Event)) (string, error) {
+type RunScope struct {
+	AgentSpaceName string
+	SessionID      string
+	TaskID         string
+	ConversationID string
+	TurnID         string
+	Source         string
+}
+
+func (s *Service) runADKPrompt(ctx context.Context, scope RunScope, prompt string, recordEvent func(*adksession.Event)) (string, error) {
+	agentSpaceName, sessionID, taskID := scope.AgentSpaceName, scope.SessionID, scope.TaskID
 	space, err := s.store.GetAgentSpace(ctx, agentSpaceName)
 	if err != nil {
 		return "", fmt.Errorf("load agent space: %w", err)
@@ -578,6 +587,11 @@ func (s *Service) runADKPrompt(ctx context.Context, agentSpaceName, sessionID, t
 	if taskID != "" {
 		toolEnv["NETX_TASK_ID"] = taskID
 	}
+	traceDir, err := filepath.Abs(filepath.Join(s.store.Root(), agentSpaceName, "traces"))
+	if err != nil {
+		return "", fmt.Errorf("resolve local trace directory: %w", err)
+	}
+	toolEnv["NETX_LOCAL_TRACE_DIR"] = traceDir
 	artifactTools, err := newArtifactTools(s.store, agentSpaceName, taskID, stagingDir)
 	if err != nil {
 		return "", fmt.Errorf("create artifact tools: %w", err)
@@ -588,15 +602,32 @@ func (s *Service) runADKPrompt(ctx context.Context, agentSpaceName, sessionID, t
 		return "", fmt.Errorf("create wecom tools: %w", err)
 	}
 	extraTools = append(extraTools, wecomTools...)
+	tracePlugin, err := localtrace.NewPlugin(localtrace.PluginConfig{
+		Repository: s.localTraceRepo,
+		Scope: localtrace.Scope{
+			AgentSpaceName: agentSpaceName,
+			TaskID:         taskID,
+			SessionID:      sessionID,
+			ConversationID: scope.ConversationID,
+			TurnID:         scope.TurnID,
+			Source:         scope.Source,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create local trace plugin: %w", err)
+	}
 	adkAgent, err := NewADKChainAgentWithEnv(ctx, llm, s.skillRunner.RootDir(), s.skillRunner, toolEnv, extraTools...)
 	if err != nil {
 		return "", fmt.Errorf("create ADK agent: %w", err)
 	}
 	adkRunner, err := runner.New(runner.Config{
-		AppName:           "netx-chain287",
-		Agent:             adkAgent,
-		SessionService:    s.sessionService,
-		ArtifactService:   s.artifactService,
+		AppName:         "netx-chain287",
+		Agent:           adkAgent,
+		SessionService:  s.sessionService,
+		ArtifactService: s.artifactService,
+		PluginConfig: runner.PluginConfig{
+			Plugins: []*adkplugin.Plugin{tracePlugin},
+		},
 		AutoCreateSession: true,
 	})
 	if err != nil {
@@ -605,14 +636,62 @@ func (s *Service) runADKPrompt(ctx context.Context, agentSpaceName, sessionID, t
 
 	content := genai.NewContentFromText(prompt, genai.RoleUser)
 	var finalText string
+	startedAt := time.Now().UTC()
+	traceSummary := localtrace.InvocationSummary{
+		Version: "1.0",
+		Scope: localtrace.Scope{
+			AgentSpaceName: agentSpaceName, TaskID: taskID, SessionID: sessionID,
+			ConversationID: scope.ConversationID, TurnID: scope.TurnID, Source: scope.Source,
+		},
+		Status: "in_progress", StartedAt: startedAt, ModelCalls: []localtrace.ModelCall{},
+	}
+	lastObservedAt := startedAt
 	for event, err := range adkRunner.Run(ctx, agentSpaceName, sessionID, content, agent.RunConfig{
 		StreamingMode: agent.StreamingModeNone,
 	}) {
 		if err != nil {
+			s.finalizeInvocationTrace(ctx, &traceSummary, "failed")
 			return "", fmt.Errorf("run ADK agent: %w", err)
 		}
 		if event == nil {
 			continue
+		}
+		if traceSummary.InvocationID == "" {
+			traceSummary.InvocationID = event.InvocationID
+		}
+		if usage := event.UsageMetadata; usage != nil {
+			completedAt := time.Now().UTC()
+			functionCallIDs := make([]string, 0)
+			if event.Content != nil {
+				for _, part := range event.Content.Parts {
+					if part != nil && part.FunctionCall != nil && part.FunctionCall.ID != "" {
+						functionCallIDs = append(functionCallIDs, part.FunctionCall.ID)
+					}
+				}
+			}
+			call := localtrace.ModelCall{
+				Sequence: len(traceSummary.ModelCalls) + 1, EventID: event.ID, Model: event.ModelVersion,
+				StartedAt: lastObservedAt, CompletedAt: completedAt, DurationMillis: completedAt.Sub(lastObservedAt).Milliseconds(),
+				InputTokens: usage.PromptTokenCount, OutputTokens: usage.CandidatesTokenCount,
+				CachedInputTokens: usage.CachedContentTokenCount, ToolUseInputTokens: usage.ToolUsePromptTokenCount,
+				ReasoningTokens: usage.ThoughtsTokenCount, TotalOutputTokens: usage.CandidatesTokenCount + usage.ThoughtsTokenCount,
+				TotalTokens: usage.TotalTokenCount, FinishReason: string(event.FinishReason), FunctionCallIDs: functionCallIDs,
+				Timestamp: completedAt,
+			}
+			traceSummary.ModelCalls = append(traceSummary.ModelCalls, call)
+			traceSummary.InputTokens += int64(call.InputTokens)
+			traceSummary.OutputTokens += int64(call.OutputTokens)
+			traceSummary.CachedInputTokens += int64(call.CachedInputTokens)
+			traceSummary.ToolUseInputTokens += int64(call.ToolUseInputTokens)
+			traceSummary.ReasoningTokens += int64(call.ReasoningTokens)
+			traceSummary.TotalOutputTokens += int64(call.TotalOutputTokens)
+			traceSummary.TotalTokens += int64(call.TotalTokens)
+		}
+		lastObservedAt = time.Now().UTC()
+		if traceSummary.InvocationID != "" {
+			traceSummary.DurationMillis = time.Since(traceSummary.StartedAt).Milliseconds()
+			traceSummary.ModelCallCount = len(traceSummary.ModelCalls)
+			_ = s.localTraceRepo.SaveInvocationSummary(ctx, traceSummary)
 		}
 		if taskID != "" {
 			s.persistSkillArtifactCandidates(ctx, agentSpaceName, taskID, stagingDir, event)
@@ -627,12 +706,39 @@ func (s *Service) runADKPrompt(ctx context.Context, agentSpaceName, sessionID, t
 		}
 	}
 	if strings.TrimSpace(finalText) == "" {
+		s.finalizeInvocationTrace(ctx, &traceSummary, "failed")
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
 		return "", fmt.Errorf("ADK agent produced no final text")
 	}
+	s.finalizeInvocationTrace(ctx, &traceSummary, "success")
 	return finalText, nil
+}
+
+func (s *Service) finalizeInvocationTrace(ctx context.Context, summary *localtrace.InvocationSummary, status string) {
+	if summary == nil || summary.InvocationID == "" || s.localTraceRepo == nil {
+		return
+	}
+	now := time.Now().UTC()
+	summary.Status = status
+	summary.CompletedAt = &now
+	summary.DurationMillis = now.Sub(summary.StartedAt).Milliseconds()
+	summary.ModelCallCount = len(summary.ModelCalls)
+	_ = s.localTraceRepo.SaveInvocationSummary(ctx, *summary)
+	trace, err := s.localTraceRepo.GetInvocationTrace(ctx, summary.Scope.AgentSpaceName, summary.InvocationID)
+	if err != nil {
+		return
+	}
+	summary.ToolCallCount = len(trace.Tools)
+	for _, tool := range trace.Tools {
+		summary.RawToolBytes += int64(tool.RawBytes)
+		summary.ModelToolBytes += int64(tool.ModelBytes)
+		if tool.Status == "error" || tool.Error != "" {
+			summary.ErrorCount++
+		}
+	}
+	_ = s.localTraceRepo.SaveInvocationSummary(ctx, *summary)
 }
 
 func (s *Service) persistSkillArtifactCandidates(ctx context.Context, agentSpaceName, taskID, stagingDir string, event *adksession.Event) {
@@ -952,6 +1058,7 @@ func functionResponseRecord(response *genai.FunctionResponse, event *adksession.
 		if output, ok := parseExecuteActionOutput(response.Response); ok {
 			toolResult.Skill = output.Skill
 			toolResult.Action = output.Action
+			toolResult.RawResultRef = output.RawResultRef
 		}
 	}
 	return model.Record{
@@ -959,6 +1066,22 @@ func functionResponseRecord(response *genai.FunctionResponse, event *adksession.
 		ModelID:    event.ModelVersion,
 		ToolResult: toolResult,
 	}, true
+}
+
+// GetLocalToolTrace resolves a server-generated reference within the owning
+// AgentSpace. The repository enforces path containment.
+func (s *Service) GetLocalToolTrace(ctx context.Context, agentSpaceName, ref string) (localtrace.ToolRecord, error) {
+	if s.localTraceRepo == nil {
+		return localtrace.ToolRecord{}, fmt.Errorf("local trace repository is unavailable")
+	}
+	return s.localTraceRepo.GetToolRecord(ctx, agentSpaceName, ref)
+}
+
+func (s *Service) FindInvocationTraces(ctx context.Context, scope localtrace.Scope) ([]localtrace.InvocationTrace, error) {
+	if s.localTraceRepo == nil {
+		return nil, fmt.Errorf("local trace repository is unavailable")
+	}
+	return s.localTraceRepo.FindInvocationTraces(ctx, scope)
 }
 
 func parseExecuteActionInput(args any) (skills.ExecuteActionInput, bool) {
@@ -1143,19 +1266,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func renderADKTaskArtifact(task model.Task, response string) string {
-	return fmt.Sprintf(`# %s
-
-## 指令
-
-%s
-
-## Agent Response
-
-%s
-`, task.Name, task.Instruction, response)
 }
 
 func ptrTime(t time.Time) *time.Time {

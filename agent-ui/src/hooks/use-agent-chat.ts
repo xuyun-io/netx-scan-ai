@@ -227,7 +227,14 @@ export function useAgentChat({
         conversationId: conversation.conversationId,
         turnId: created.turn.turnId,
         onUpdate: (turn, records) => {
-          const nextEvents = recordsToChatEvents(records, { scopeKey });
+          const nextEvents = recordsToChatEvents(records, {
+            scopeKey,
+            traceScope: {
+              agentSpaceName,
+              conversationId: conversation.conversationId,
+              turnId: turn.turnId,
+            },
+          });
           if (!isTurnDone(turn)) {
             nextEvents.push({
               id: scopedEventId(scopeKey, `${turn.turnId}-status`),

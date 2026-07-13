@@ -7,7 +7,7 @@ The agent server is the Go backend for NetX AI. It exposes the `/api/v1` JSON AP
 - AgentSpace, conversation, task, automation, document, artifact, and record APIs.
 - Google ADK-Go v2 model execution.
 - Gemini and Gemini relay model configuration.
-- Chain287 skill runner integration.
+- Skill runner integration for read-only operational checks.
 - File-backed persistence.
 - Scheduled automation execution.
 - Enterprise WeChat notification and system tool support.
@@ -158,5 +158,5 @@ go test ./...
 - Use JSON logs in containers.
 - Do not log or commit secrets.
 - Keep `publicURL` reachable by Enterprise WeChat recipients.
-- Use `CHAIN287_RPC_URL` in AgentSpace environment variables for real Chain287 skills.
+- Configure the endpoint variables required by your enabled skills in AgentSpace environment variables.
 - Keep skills read-only unless an explicit approval workflow is added.

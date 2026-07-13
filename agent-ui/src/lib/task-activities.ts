@@ -9,6 +9,7 @@ export interface TaskActivity {
   content?: string;
   request?: string;
   response?: string;
+  rawResultRef?: string;
 }
 
 export function groupRecordsIntoActivities(records: RecordEntry[]) {
@@ -77,6 +78,7 @@ export function groupRecordsIntoActivities(records: RecordEntry[]) {
           subtitle: name,
           request: call?.toolCall?.input ? prettyJson(call.toolCall.input) : undefined,
           response: result?.toolResult?.output ? prettyJson(result.toolResult.output) : undefined,
+          rawResultRef: result?.toolResult?.rawResultRef,
         });
       } else if (entry.loadSkill) {
         const r = entry.loadSkill;

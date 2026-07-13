@@ -8,17 +8,17 @@ NetX AI keeps skill execution explicit. The model does not run arbitrary shell c
 
 ```text
 agent-server/skills/
-├── chain287-chain-query/
+├── example-health-check/
 │   ├── SKILL.md
 │   ├── tools.yaml
 │   ├── references/
 │   └── scripts/
-├── chain287-validator-health/
+├── example-service-inspection/
 │   ├── SKILL.md
 │   ├── tools.yaml
 │   ├── references/
 │   └── scripts/
-└── chain287-sre-inspection-report/
+└── example-report-generator/
     ├── SKILL.md
     ├── tools.yaml
     ├── references/
@@ -48,8 +48,7 @@ agent-server/skills/
 
 The skill runner receives AgentSpace environment variables such as:
 
-- `CHAIN287_RPC_URL`
-- `ETH_RPC_URL`
+- Endpoint variables required by your skills
 - Any other AgentSpace-scoped runtime values.
 
 The backend also injects:
@@ -72,13 +71,13 @@ Skill actions should return structured output when possible:
   "artifacts": [
     {
       "ref": "report.html",
-      "name": "chain287-inspection.html",
+      "name": "sre-inspection.html",
       "mimeType": "text/html",
       "description": "HTML inspection report"
     }
   ],
   "metadata": {
-    "skill": "chain287-sre-inspection-report",
+    "skill": "example-report-generator",
     "action": "generate_report"
   }
 }
@@ -88,19 +87,18 @@ The backend stores the result as task records and persists artifact candidates f
 
 ## Safety Policy
 
-Current Chain287 skills should be read-only by default:
+Operational skills should be read-only by default:
 
-- Query RPC state.
-- Inspect validator health.
+- Query external system state.
+- Inspect service health.
 - Generate reports.
 - Save artifacts.
 
 They should not:
 
-- Import private keys.
-- Send transactions.
-- Unlock accounts.
-- Restart nodes.
+- Access or print secrets.
+- Trigger irreversible external actions without approval.
+- Restart services.
 - Mutate production state.
 - Run privileged infrastructure commands.
 

@@ -37,7 +37,7 @@ const statusConfig: Record<
   },
   FAILED: {
     label: 'Failed',
-    className: 'text-[#a7afba]',
+    className: 'text-[#ef746b]',
     icon: XCircle,
   },
   CANCELLED: {

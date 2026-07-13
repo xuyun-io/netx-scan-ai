@@ -39,7 +39,7 @@ actions:
       - validator_jailed_status
 
   validator_window_stats:
-    description: 统计时间窗口或块区间内各验证者出块、tx、gasUsed、operator 余额变化。
+    description: 使用二分窗口定位和批量 RPC 统计块区间内各验证者出块、tx、gasUsed、operator 余额变化。
     readonly: true
     approval: false
     timeoutSeconds: 120

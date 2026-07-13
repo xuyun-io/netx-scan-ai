@@ -179,11 +179,12 @@ type ToolCall struct {
 }
 
 type ToolResult struct {
-	Output    string `json:"output" yaml:"output"`
-	ToolUseID string `json:"toolUseId" yaml:"toolUseId"`
-	Skill     string `json:"skill,omitempty" yaml:"skill,omitempty"`
-	Action    string `json:"action,omitempty" yaml:"action,omitempty"`
-	IsError   bool   `json:"isError" yaml:"isError"`
+	Output       string `json:"output" yaml:"output"`
+	RawResultRef string `json:"rawResultRef,omitempty" yaml:"rawResultRef,omitempty"`
+	ToolUseID    string `json:"toolUseId" yaml:"toolUseId"`
+	Skill        string `json:"skill,omitempty" yaml:"skill,omitempty"`
+	Action       string `json:"action,omitempty" yaml:"action,omitempty"`
+	IsError      bool   `json:"isError" yaml:"isError"`
 }
 
 type LoadSkill struct {

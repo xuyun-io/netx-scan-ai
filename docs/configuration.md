@@ -165,8 +165,7 @@ Common values:
 | `GEMINI_RELAY_API_KEY` | Relay API key fallback for `gemini-relay`. |
 | `TOKENSTARS_API_KEY` | Tokenstars-style relay key fallback. |
 | `CC_SWITCH_API_KEY` | Internal relay key fallback. |
-| `CHAIN287_RPC_URL` | Chain287 RPC endpoint for skills. |
-| `ETH_RPC_URL` | Ethereum-compatible RPC fallback. |
+| Skill-specific endpoint variables | External endpoints required by enabled skills. |
 
 The backend injects these runtime variables for skill execution:
 

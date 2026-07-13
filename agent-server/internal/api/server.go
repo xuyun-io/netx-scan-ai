@@ -17,6 +17,7 @@ import (
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/agent"
 	automationsvc "gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/automation"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/config"
+	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/localtrace"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/model"
 	"gitlab.weajp.com/netxscan/chain287/netx-ai/agent-server/internal/store"
 	"go.uber.org/zap"
@@ -59,39 +60,41 @@ func NewWithConfig(store *store.Store, agentService *agent.Service, webDist stri
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	for path, handler := range map[string]http.HandlerFunc{
-		"/api/v1/createAgentSpace":   s.createAgentSpace,
-		"/api/v1/listAgentSpaces":    s.listAgentSpaces,
-		"/api/v1/getAgentSpace":      s.getAgentSpace,
-		"/api/v1/updateAgentSpace":   s.updateAgentSpace,
-		"/api/v1/deleteAgentSpace":   s.deleteAgentSpace,
-		"/api/v1/createConversation": s.createConversation,
-		"/api/v1/listConversations":  s.listConversations,
-		"/api/v1/getConversation":    s.getConversation,
-		"/api/v1/deleteConversation": s.deleteConversation,
-		"/api/v1/createTurn":         s.createTurn,
-		"/api/v1/getTurn":            s.getTurn,
-		"/api/v1/createTask":         s.createTask,
-		"/api/v1/getTask":            s.getTask,
-		"/api/v1/listTasks":          s.listTasks,
-		"/api/v1/deleteTask":         s.deleteTask,
-		"/api/v1/respondToTask":      s.respondToTask,
-		"/api/v1/cancelTask":         s.cancelTask,
-		"/api/v1/createAutomation":   s.createAutomation,
-		"/api/v1/listAutomations":    s.listAutomations,
-		"/api/v1/getAutomation":      s.getAutomation,
-		"/api/v1/updateAutomation":   s.updateAutomation,
-		"/api/v1/deleteAutomation":   s.deleteAutomation,
-		"/api/v1/triggerAutomation":  s.triggerAutomation,
-		"/api/v1/listRecords":        s.listRecords,
-		"/api/v1/listArtifacts":      s.listArtifacts,
-		"/api/v1/getArtifact":        s.getArtifact,
-		"/api/v1/deleteArtifact":     s.deleteArtifact,
-		"/api/v1/createDocument":     s.createDocument,
-		"/api/v1/listDocuments":      s.listDocuments,
-		"/api/v1/getDocument":        s.getDocument,
-		"/api/v1/deleteDocument":     s.deleteDocument,
-		"/api/v1/healthz":            s.healthz,
-		"/api/v1/login":              s.login,
+		"/api/v1/createAgentSpace":     s.createAgentSpace,
+		"/api/v1/listAgentSpaces":      s.listAgentSpaces,
+		"/api/v1/getAgentSpace":        s.getAgentSpace,
+		"/api/v1/updateAgentSpace":     s.updateAgentSpace,
+		"/api/v1/deleteAgentSpace":     s.deleteAgentSpace,
+		"/api/v1/createConversation":   s.createConversation,
+		"/api/v1/listConversations":    s.listConversations,
+		"/api/v1/getConversation":      s.getConversation,
+		"/api/v1/deleteConversation":   s.deleteConversation,
+		"/api/v1/createTurn":           s.createTurn,
+		"/api/v1/getTurn":              s.getTurn,
+		"/api/v1/createTask":           s.createTask,
+		"/api/v1/getTask":              s.getTask,
+		"/api/v1/listTasks":            s.listTasks,
+		"/api/v1/deleteTask":           s.deleteTask,
+		"/api/v1/respondToTask":        s.respondToTask,
+		"/api/v1/cancelTask":           s.cancelTask,
+		"/api/v1/createAutomation":     s.createAutomation,
+		"/api/v1/listAutomations":      s.listAutomations,
+		"/api/v1/getAutomation":        s.getAutomation,
+		"/api/v1/updateAutomation":     s.updateAutomation,
+		"/api/v1/deleteAutomation":     s.deleteAutomation,
+		"/api/v1/triggerAutomation":    s.triggerAutomation,
+		"/api/v1/listRecords":          s.listRecords,
+		"/api/v1/getLocalToolTrace":    s.getLocalToolTrace,
+		"/api/v1/findInvocationTraces": s.findInvocationTraces,
+		"/api/v1/listArtifacts":        s.listArtifacts,
+		"/api/v1/getArtifact":          s.getArtifact,
+		"/api/v1/deleteArtifact":       s.deleteArtifact,
+		"/api/v1/createDocument":       s.createDocument,
+		"/api/v1/listDocuments":        s.listDocuments,
+		"/api/v1/getDocument":          s.getDocument,
+		"/api/v1/deleteDocument":       s.deleteDocument,
+		"/api/v1/healthz":              s.healthz,
+		"/api/v1/login":                s.login,
 	} {
 		mux.Handle(path, s.postOnly(handler))
 	}
@@ -592,6 +595,35 @@ func (s *Server) listRecords(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) getLocalToolTrace(w http.ResponseWriter, r *http.Request) {
+	var req localToolTraceRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	record, err := s.agent.GetLocalToolTrace(r.Context(), req.AgentSpaceName, req.Ref)
+	if err != nil {
+		writeNotFoundOrError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"trace": record})
+}
+
+func (s *Server) findInvocationTraces(w http.ResponseWriter, r *http.Request) {
+	var req invocationTraceRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	traces, err := s.agent.FindInvocationTraces(r.Context(), localtrace.Scope{
+		AgentSpaceName: req.AgentSpaceName,
+		TaskID:         req.TaskID, ConversationID: req.ConversationID, TurnID: req.TurnID,
+	})
+	if err != nil {
+		writeNotFoundOrError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"traces": traces})
+}
+
 func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	var req listByAgentRequest
 	if !decode(w, r, &req) {
@@ -818,6 +850,18 @@ type listRecordsRequest struct {
 	TurnID         string `json:"turnId"`
 	MaxResults     int    `json:"maxResults"`
 	NextToken      string `json:"nextToken"`
+}
+
+type localToolTraceRequest struct {
+	AgentSpaceName string `json:"agentSpaceName"`
+	Ref            string `json:"ref"`
+}
+
+type invocationTraceRequest struct {
+	AgentSpaceName string `json:"agentSpaceName"`
+	TaskID         string `json:"taskId"`
+	ConversationID string `json:"conversationId"`
+	TurnID         string `json:"turnId"`
 }
 
 type artifactIDRequest struct {

@@ -314,9 +314,9 @@ function RequestUpdatesCard({ tasks }: { tasks: Task[] }) {
       <div className="mt-4 min-h-[84px] space-y-3">
         {recentTasks.length > 0 ? (
           recentTasks.map((task) => (
-            <div key={task.taskId} className="flex min-w-0 items-center gap-2 text-sm">
-              <span className="min-w-0 truncate font-medium text-[#8f82ff]">{task.name}</span>
-              <StatusBadge status={task.status} />
+            <div key={task.taskId} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 text-sm">
+              <span className="min-w-0 truncate font-medium text-[#8f82ff]" title={task.name}>{task.name}</span>
+              <span className="shrink-0"><StatusBadge status={task.status} /></span>
               <span className="shrink-0 text-xs font-normal text-[#8f98a6]">{formatShortTime(task.updatedAt)}</span>
             </div>
           ))

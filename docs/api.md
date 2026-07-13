@@ -130,14 +130,14 @@ curl -X POST http://127.0.0.1:8080/api/v1/createAgentSpace \
   -H 'content-type: application/json' \
   -d '{
     "name": "demo",
-    "description": "Chain287 SRE workspace",
+    "description": "SRE operations workspace",
     "llm": {
       "provider": "gemini",
       "model": "gemini-2.5-pro",
       "apiKey": "replace-me"
     },
     "environment": {
-      "CHAIN287_RPC_URL": "https://rpc.example.com"
+      "SERVICE_ENDPOINT_URL": "https://service.example.com"
     }
   }'
 ```
@@ -156,7 +156,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/createAgentSpace \
       "baseUrl": "https://relay.example.com"
     },
     "environment": {
-      "CHAIN287_RPC_URL": "https://rpc.example.com"
+      "SERVICE_ENDPOINT_URL": "https://service.example.com"
     }
   }'
 ```
@@ -169,7 +169,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/createTurn \
   -d '{
     "agentSpaceName": "demo",
     "conversationId": "conversation-...",
-    "prompt": "Check Chain287 latest block and summarize validator health."
+    "prompt": "Check service health and summarize any notable issues."
   }'
 ```
 
@@ -180,8 +180,8 @@ curl -X POST http://127.0.0.1:8080/api/v1/createAutomation \
   -H 'content-type: application/json' \
   -d '{
     "agentSpaceName": "demo",
-    "name": "Daily Chain287 inspection",
-    "instruction": "Run the Chain287 SRE inspection report and save the HTML artifact.",
+    "name": "Daily infrastructure inspection",
+    "instruction": "Run the SRE inspection report and save the HTML artifact.",
     "schedule": {
       "frequency": "daily",
       "interval": 1,

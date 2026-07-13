@@ -40,7 +40,7 @@ Important log areas:
 - Task lifecycle events.
 - Enterprise WeChat notification success or failure.
 
-Logs should not contain API keys, webhook URLs, or private RPC credentials.
+Logs should not contain API keys, webhook URLs, or private endpoint credentials.
 
 ## Backups
 
@@ -101,8 +101,8 @@ Check:
 
 Check:
 
-- `CHAIN287_RPC_URL` is configured.
-- `cast` is installed when running outside Docker.
+- Required endpoint variables for enabled skills are configured.
+- Required command-line tools are installed when running outside Docker.
 - Scripts in `agent-server/skills/*/scripts` are executable in the target environment.
 - The skill action exists in `tools.yaml`.
 - Task records include the tool error details.

@@ -19,7 +19,7 @@ FROM ghcr.io/foundry-rs/foundry:latest AS foundry
 
 FROM ubuntu:22.04
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata python3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=foundry /usr/local/bin/cast /usr/local/bin/cast

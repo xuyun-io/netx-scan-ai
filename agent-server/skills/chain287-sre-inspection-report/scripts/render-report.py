@@ -747,12 +747,46 @@ def build_explanation_model():
     ]
 
 
+EXPECTED_ACTIONS = {
+    ("chain287-chain-query", "rpc_snapshot"),
+    ("chain287-chain-query", "chain_health"),
+    ("chain287-chain-query", "recent_blocks"),
+    ("chain287-chain-query", "active_validators"),
+    ("chain287-validator-health", "validator_overview"),
+    ("chain287-validator-health", "validator_block_stats"),
+    ("chain287-validator-health", "validator_rewards"),
+    ("chain287-validator-health", "validator_jailed_status"),
+    ("chain287-validator-health", "validator_window_stats"),
+}
+
+
+def missing_actions(payload):
+    """Return the set of expected upstream actions that are absent from the payload."""
+    present = set()
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                present.add((item.get("skill"), item.get("action")))
+    elif isinstance(payload, dict):
+        present.add((payload.get("skill"), payload.get("action")))
+    return EXPECTED_ACTIONS - present
+
+
 def build_report(payload, title, scope, notes):
     checks = collect_checks(payload)
     levels = [severity(check) for check in checks]
     counts = {level: levels.count(level) for level in ("critical", "warning", "ok", "unknown")}
-    score = max(0, 100 - counts["critical"] * 25 - counts["warning"] * 10 - counts["unknown"] * 5)
-    overall = "critical" if counts["critical"] else "warning" if counts["warning"] else "ok" if counts["ok"] else "unknown"
+    absent = missing_actions(payload)
+    has_data_gap = bool(absent)
+    score = max(0, 100 - counts["critical"] * 25 - counts["warning"] * 10 - counts["unknown"] * 5 - (5 if has_data_gap else 0))
+    if counts["critical"]:
+        overall = "critical"
+    elif counts["warning"] or has_data_gap:
+        overall = "warning"
+    elif counts["ok"]:
+        overall = "ok"
+    else:
+        overall = "unknown"
     generated_at = utc_now()
     summary = {
         "critical": "存在需要立即处理的链或验证者风险，请优先查看 Critical 项。",
@@ -772,6 +806,15 @@ def build_report(payload, title, scope, notes):
         {"name": "操作说明", "items": [{"label": "执行方式", "value": "仅使用只读 skill 输出"}, {"label": "写操作", "value": "未执行链上写操作"}]},
     ]
 
+    action_items = build_action_model(checks, validators)
+    if has_data_gap:
+        missing_names = sorted(f"{skill}/{action}" for skill, action in absent)
+        action_items.insert(0, {
+            "level": "warning",
+            "title": "巡检数据不完整",
+            "description": f"以下上游检查未执行或输出缺失，导致报告缺少验证者、收益等数据：{', '.join(missing_names)}。请在调用 render_report 前先运行这些 skill action。",
+        })
+
     report_data = {
         "title": title,
         "generatedAt": generated_at,
@@ -784,7 +827,7 @@ def build_report(payload, title, scope, notes):
         "newbieSummary": build_newbie_summary(overall, score, counts, checks),
         "counts": counts,
         "signals": signals,
-        "actionItems": build_action_model(checks, validators),
+        "actionItems": action_items,
         "validators": build_validator_model(validators),
         "checks": build_check_model(checks, levels),
         "explanations": build_explanation_model(),
@@ -810,6 +853,7 @@ def build_report(payload, title, scope, notes):
         "warningCount": counts["warning"],
         "okCount": counts["ok"],
         "unknownCount": counts["unknown"],
+        "dataGap": has_data_gap,
     }
 
 
@@ -859,7 +903,7 @@ def main():
     data["reportBytes"] = size
     emit({
         "version": "1.0",
-        "status": "ok" if data["criticalCount"] == 0 and data["warningCount"] == 0 else "partial",
+        "status": "ok" if data["criticalCount"] == 0 and data["warningCount"] == 0 and not data.get("dataGap") else "partial",
         "message": f"已生成 Chain287 SRE HTML 巡检报告：{filename}",
         "data": data,
         "display": {"format": "html", "title": title},

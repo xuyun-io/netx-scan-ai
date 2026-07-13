@@ -35,6 +35,11 @@ count = max(1, min(int(sys.argv[2]), 200))
 def shell(args):
     return subprocess.check_output(args, text=True).strip()
 
+def cast_block_json(number):
+    raw = shell(["cast", "block", str(number), "--json", "--rpc-url", rpc_url])
+    payload = json.loads(raw)
+    return payload.get("data", payload)
+
 source = "cast block <n> --json"
 timestamp = shell(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"])
 
@@ -53,8 +58,7 @@ blocks = []
 start_block = max(0, latest - count + 1)
 for n in range(start_block, latest + 1):
     try:
-        raw = shell(["cast", "block", str(n), "--json", "--rpc-url", rpc_url])
-        blk = json.loads(raw)["data"]
+        blk = cast_block_json(n)
         blocks.append({
             "number": int(blk["number"], 16),
             "timestamp": int(blk["timestamp"], 16),
@@ -111,6 +115,11 @@ def shell(args):
 def cast(args):
     return shell(["cast"] + args + ["--rpc-url", rpc_url])
 
+def cast_block_json(number):
+    raw = shell(["cast", "block", str(number), "--json", "--rpc-url", rpc_url])
+    payload = json.loads(raw)
+    return payload.get("data", payload)
+
 timestamp = shell(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"])
 source = "chain_health aggregation"
 
@@ -141,7 +150,7 @@ if not checks["rpcAlive"]["ok"]:
 
 # 2. Latest block and timestamp
 latest_block = int(cast(["block-number"]))
-latest_block_raw = json.loads(shell(["cast", "block", str(latest_block), "--json", "--rpc-url", rpc_url]))["data"]
+latest_block_raw = cast_block_json(latest_block)
 latest_ts = int(latest_block_raw["timestamp"], 16)
 now_ts = int(time.time())
 block_age_s = max(0, now_ts - latest_ts)
@@ -159,9 +168,9 @@ elif block_age_s > 60:
 intervals = []
 for n in range(max(0, latest_block - count + 1), latest_block + 1):
     try:
-        blk = json.loads(shell(["cast", "block", str(n), "--json", "--rpc-url", rpc_url]))["data"]
+        blk = cast_block_json(n)
         if n > max(0, latest_block - count + 1):
-            prev = json.loads(shell(["cast", "block", str(n - 1), "--json", "--rpc-url", rpc_url]))["data"]
+            prev = cast_block_json(n - 1)
             intervals.append(int(blk["timestamp"], 16) - int(prev["timestamp"], 16))
     except (subprocess.CalledProcessError, json.JSONDecodeError):
         continue

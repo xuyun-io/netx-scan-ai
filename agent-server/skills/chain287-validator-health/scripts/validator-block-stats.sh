@@ -36,6 +36,11 @@ def shell(args):
 def cast(args):
     return shell(["cast"] + args + ["--rpc-url", rpc_url])
 
+def cast_block_json(number):
+    raw = cast(["block", str(number), "--json"])
+    payload = json.loads(raw)
+    return payload.get("data", payload)
+
 timestamp = shell(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"])
 source = "validator_block_stats"
 
@@ -83,7 +88,7 @@ start_block = max(0, latest - sample + 1)
 miners = []
 for n in range(start_block, latest + 1):
     try:
-        blk = json.loads(cast(["block", str(n), "--json"]))["data"]
+        blk = cast_block_json(n)
         miners.append(blk["miner"].lower())
     except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
         detail = f"获取区块 {n} 失败"

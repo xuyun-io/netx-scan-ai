@@ -449,6 +449,27 @@ function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate,
   const [envError, setEnvError] = useState<string | null>(null);
   const [wecomSetupOpen, setWecomSetupOpen] = useState(false);
   const [integrationError, setIntegrationError] = useState<string | null>(null);
+  const [editingLLM, setEditingLLM] = useState(false);
+  const [llmForm, setLlmForm] = useState({
+    provider: 'gemini',
+    model: 'gemini-2.5-pro',
+    apiKey: '',
+    baseUrl: '',
+  });
+  const [llmError, setLlmError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editingLLM) {
+      setLlmError(null);
+      return;
+    }
+    setLlmForm({
+      provider: agentSpace.llm?.provider ?? 'gemini',
+      model: agentSpace.llm?.model ?? 'gemini-2.5-pro',
+      apiKey: '',
+      baseUrl: agentSpace.llm?.baseUrl ?? '',
+    });
+  }, [editingLLM, agentSpace.llm]);
 
   useEffect(() => {
     if (!editingEnv) {
@@ -491,6 +512,39 @@ function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate,
   const handleCancelEnv = () => {
     setEditingEnv(false);
     setEnvError(null);
+  };
+
+  const updateLlmForm = (values: Partial<typeof llmForm>) => {
+    setLlmForm((current) => ({ ...current, ...values }));
+  };
+
+  const handleSaveLLM = async () => {
+    const model = llmForm.model.trim();
+    const provider = llmForm.provider.trim();
+    if (!provider || !model) {
+      setLlmError('Provider 和 Model 不能为空。');
+      return;
+    }
+    try {
+      await onUpdate({
+        ...agentSpace,
+        llm: {
+          provider,
+          model,
+          apiKey: llmForm.apiKey.trim() || undefined,
+          baseUrl: llmForm.baseUrl.trim() || undefined,
+        },
+      });
+      setEditingLLM(false);
+      setLlmError(null);
+    } catch (err) {
+      setLlmError((err as Error).message);
+    }
+  };
+
+  const handleCancelLLM = () => {
+    setEditingLLM(false);
+    setLlmError(null);
   };
 
   const handleSaveWeCom = async (input: { enabled: boolean; webhookUrl?: string }) => {
@@ -652,6 +706,7 @@ function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate,
             <TabsList className="h-10 w-full shrink-0 justify-start rounded-t-xl border-b border-[#e2e8f0] bg-white px-4 pt-2">
               <DetailTab value="overview" label="动态" active={activeTab === 'overview'} />
               <DetailTab value="tasks" label="Tasks" active={activeTab === 'tasks'} />
+              <DetailTab value="llm" label="模型" active={activeTab === 'llm'} />
               <DetailTab value="env" label="环境变量" active={activeTab === 'env'} />
               <DetailTab value="skills" label="Skills" active={activeTab === 'skills'} />
               <DetailTab value="mcp" label="MCP" active={activeTab === 'mcp'} />
@@ -664,6 +719,132 @@ function AgentDetailView({ agentSpace, busy, onBack, onDelete, onOpen, onUpdate,
               </TabsContent>
               <TabsContent value="tasks" className="mt-0">
                 <EmptyState icon={Check} title="暂无 Tasks" description="创建 Task 后将显示在这里。" />
+              </TabsContent>
+              <TabsContent value="llm" className="mt-0">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold text-[#111827]">LLM 配置</h2>
+                    <p className="mt-1 text-xs leading-5 text-[#64748b]">
+                      为当前 AgentSpace 指定模型、Provider 和 API Key。
+                    </p>
+                  </div>
+                  {!editingLLM && (
+                    <Button
+                      className="h-8 rounded-md border-[#d1d5db] bg-white px-3 text-xs text-[#374151] hover:bg-[#f9fafb]"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => setEditingLLM(true)}
+                    >
+                      <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                      编辑
+                    </Button>
+                  )}
+                </div>
+
+                {llmError && (
+                  <div className="mt-4 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {llmError}
+                  </div>
+                )}
+
+                <div className="mt-4 space-y-4">
+                  {editingLLM ? (
+                    <form onSubmit={(event) => event.preventDefault()} className="space-y-4">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <LightField label="LLM Provider">
+                          <Select
+                            value={llmForm.provider}
+                            onValueChange={(provider) => updateLlmForm({ provider })}
+                          >
+                            <SelectTrigger className="border-[#cbd5e1] bg-white text-[#111827] focus:ring-[#ccfbf1]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="border-[#cbd5e1] bg-white text-[#111827]">
+                              <SelectItem className="focus:bg-[#ecfdf5] focus:text-[#111827]" value="gemini">
+                                Gemini
+                              </SelectItem>
+                              <SelectItem className="focus:bg-[#ecfdf5] focus:text-[#111827]" value="gemini-relay">
+                                Gemini Relay
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </LightField>
+                        <LightField label="Model">
+                          <input
+                            className={controlClassName}
+                            value={llmForm.model}
+                            onChange={(event) => updateLlmForm({ model: event.target.value })}
+                            placeholder="例如 gemini-2.5-pro"
+                          />
+                        </LightField>
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <LightField label="API Key" hint="留空表示保持不变。">
+                          <input
+                            className={controlClassName}
+                            type="password"
+                            value={llmForm.apiKey}
+                            onChange={(event) => updateLlmForm({ apiKey: event.target.value })}
+                            placeholder="输入新的 API Key"
+                          />
+                        </LightField>
+                        <LightField label="Base URL" hint="gemini-relay 必填，例如 https://www.tokenstars.ai。">
+                          <input
+                            className={controlClassName}
+                            value={llmForm.baseUrl}
+                            onChange={(event) => updateLlmForm({ baseUrl: event.target.value })}
+                            placeholder="例如 https://www.tokenstars.ai"
+                          />
+                        </LightField>
+                      </div>
+                      <div className="flex items-center justify-end gap-2 pt-2">
+                        <Button
+                          className="h-8 rounded-md border-[#d1d5db] bg-white px-3 text-xs text-[#374151] hover:bg-[#f9fafb]"
+                          variant="outline"
+                          type="button"
+                          disabled={busy}
+                          onClick={handleCancelLLM}
+                        >
+                          <X className="mr-1.5 h-3.5 w-3.5" />
+                          取消
+                        </Button>
+                        <Button
+                          className="h-8 rounded-md bg-[#0f766e] px-3 text-xs text-white hover:bg-[#115e59]"
+                          type="button"
+                          disabled={busy}
+                          onClick={handleSaveLLM}
+                        >
+                          <Check className="mr-1.5 h-3.5 w-3.5" />
+                          保存
+                        </Button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="rounded-md border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3">
+                        <div className="text-xs text-[#64748b]">Provider</div>
+                        <div className="mt-1 text-sm font-medium text-[#334155]">{agentSpace.llm?.provider || '-'}</div>
+                      </div>
+                      <div className="rounded-md border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3">
+                        <div className="text-xs text-[#64748b]">Model</div>
+                        <div className="mt-1 text-sm font-medium text-[#334155]">{agentSpace.llm?.model || '-'}</div>
+                      </div>
+                      <div className="rounded-md border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3">
+                        <div className="text-xs text-[#64748b]">API Key</div>
+                        <div className="mt-1 text-sm font-medium text-[#334155]">
+                          {agentSpace.llm?.apiKey ? '••••••••' : '-'}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3">
+                        <div className="text-xs text-[#64748b]">Base URL</div>
+                        <div className="mt-1 break-all text-sm font-medium text-[#334155]">
+                          {agentSpace.llm?.baseUrl || '-'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </TabsContent>
               <TabsContent value="env" className="mt-0">
                 <h2 className="text-sm font-semibold text-[#111827]">环境变量</h2>
@@ -1487,7 +1668,7 @@ function WizardRail({ step }: { step: number }) {
 function StepName({ form, onChange }: StepProps) {
   return (
     <WizardSection eyebrow="Step 1" title="基础信息" description="创建 AgentSpace 并绑定 LLM 配置。">
-      <div className="grid gap-4">
+      <form onSubmit={(event) => event.preventDefault()} className="grid gap-4">
         <LightField label="Agent 名称" hint="全局唯一，仅字母和数字，1-64 个字符，用于 URL 访问。">
           <input
             className={controlClassName}
@@ -1516,11 +1697,8 @@ function StepName({ form, onChange }: StepProps) {
                 <SelectItem className="focus:bg-[#ecfdf5] focus:text-[#111827]" value="gemini">
                   Gemini
                 </SelectItem>
-                <SelectItem className="focus:bg-[#ecfdf5] focus:text-[#111827]" value="openai">
-                  OpenAI compatible
-                </SelectItem>
-                <SelectItem className="focus:bg-[#ecfdf5] focus:text-[#111827]" value="local">
-                  Local endpoint
+                <SelectItem className="focus:bg-[#ecfdf5] focus:text-[#111827]" value="gemini-relay">
+                  Gemini Relay
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -1544,7 +1722,7 @@ function StepName({ form, onChange }: StepProps) {
               placeholder="Optional"
             />
           </LightField>
-          <LightField label="Base URL" hint="兼容 OpenAI 或本地模型网关时使用。">
+          <LightField label="Base URL" hint="gemini-relay 必填，例如 https://www.tokenstars.ai。">
             <input
               className={controlClassName}
               value={form.baseUrl}
@@ -1553,7 +1731,7 @@ function StepName({ form, onChange }: StepProps) {
             />
           </LightField>
         </div>
-      </div>
+      </form>
     </WizardSection>
   );
 }
@@ -1598,7 +1776,6 @@ function StepEnvironment({ form, onChange }: StepProps) {
             />
             <input
               className={controlClassName}
-              type="password"
               value={row.value}
               onChange={(event) => updateRow(index, { value: event.target.value })}
               placeholder="值"

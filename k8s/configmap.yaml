@@ -1,0 +1,34 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netx-scan-ai-config
+  namespace: nss
+  labels:
+    app: netx-scan-ai
+data:
+  app.yaml: |
+    # Kubernetes production config for netx-sre-agent.
+    # Sensitive values (auth.password) should be sourced from
+    # Kubernetes Secrets in real deployments.
+    httpAddr: :8080
+
+    # In containers, point root to the PVC mount (/data).  Web and skills
+    # assets stay inside the image at absolute paths so they are not shadowed
+    # by the persistent volume.
+    path:
+      root: /data
+      agents: agents
+      web: /app/web/dist
+      skills: /app/skills
+
+    # Public URL used in Enterprise WeChat task links.
+    publicURL: "https://netx-agent.example.com"
+
+    logLevel: info
+    logFormat: json
+
+    auth:
+      username: admin
+      # TODO: replace with a value from a Secret in production.
+      password: CHANGE_ME

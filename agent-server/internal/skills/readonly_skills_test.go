@@ -7,11 +7,34 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+func TestBundledRunInspectionActionIsDeclaredAndScriptCompiles(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", "..", "skills"))
+	manifest, err := loadManifest(filepath.Join(root, "chain287-sre-inspection-report"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, ok := manifest.Actions["run_inspection"]
+	if !ok || !action.ReadOnly || action.Approval {
+		t.Fatalf("run_inspection action = %+v, present = %v", action, ok)
+	}
+	if len(manifest.Actions) != 1 {
+		t.Fatalf("report skill must expose only run_inspection, got %v", manifest.Actions)
+	}
+	for _, name := range []string{"run-inspection.py", "render-html.py"} {
+		script := filepath.Join(root, "chain287-sre-inspection-report", "scripts", name)
+		command := exec.Command("python3", "-c", "compile(open(r'"+script+"', encoding='utf-8').read(), r'"+script+"', 'exec')")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("compile %s: %v: %s", name, err, output)
+		}
+	}
+}
 
 func TestBundledSkillActionsAreReadOnly(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", "..", "skills"))
@@ -114,96 +137,6 @@ func TestValidatorWindowStatsUsesBatchBlockReads(t *testing.T) {
 	}
 	if atomic.LoadInt32(&requestCount) >= 30 {
 		t.Fatalf("RPC requests = %d, expected binary lookup plus batched reads", requestCount)
-	}
-}
-
-func TestBundledReportSkillLoadsLocalTraceReference(t *testing.T) {
-	root := filepath.Clean(filepath.Join("..", "..", "skills"))
-	staging := t.TempDir()
-	traceRoot := t.TempDir()
-	invocationID := "inv-report-test"
-	toolsDir := filepath.Join(traceRoot, invocationID, "tools")
-	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	required := [][2]string{
-		{"chain287-chain-query", "rpc_snapshot"}, {"chain287-chain-query", "chain_health"},
-		{"chain287-chain-query", "recent_blocks"}, {"chain287-chain-query", "active_validators"},
-		{"chain287-validator-health", "validator_overview"}, {"chain287-validator-health", "validator_block_stats"},
-		{"chain287-validator-health", "validator_rewards"}, {"chain287-validator-health", "validator_jailed_status"},
-		{"chain287-validator-health", "validator_window_stats"},
-	}
-	for index, item := range required {
-		record := map[string]any{"response": map[string]any{
-			"skill": item[0], "action": item[1],
-			"output": map[string]any{"version": "1.0", "status": "ok", "message": "real check", "data": map[string]any{}},
-		}}
-		data, err := json.Marshal(record)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(toolsDir, fmt.Sprintf("call-%d.json", index)), data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	result, err := NewRunner(Config{RootDir: root}).RunWithEnv(
-		context.Background(),
-		"chain287-sre-inspection-report",
-		"render_report",
-		map[string]string{
-			"report_ref":   invocationID,
-			"report_title": "Trace-based report",
-		},
-		map[string]string{
-			"NETX_ARTIFACT_DIR":    staging,
-			"NETX_LOCAL_TRACE_DIR": traceRoot,
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Output == nil || len(result.Artifacts) != 1 {
-		t.Fatalf("result = %+v", result)
-	}
-	if _, err := os.Stat(filepath.Join(staging, result.Artifacts[0].Ref)); err != nil {
-		t.Fatalf("trace-based report was not written: %v", err)
-	}
-}
-
-func TestBundledReportSkillRejectsIncompleteInspection(t *testing.T) {
-	root := filepath.Clean(filepath.Join("..", "..", "skills"))
-	staging := t.TempDir()
-	traceRoot := t.TempDir()
-	invocationID := "inv-incomplete-report"
-	toolsDir := filepath.Join(traceRoot, invocationID, "tools")
-	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	record := map[string]any{"response": map[string]any{
-		"skill": "chain287-chain-query", "action": "rpc_snapshot",
-		"output": map[string]any{"version": "1.0", "status": "ok", "message": "real check", "data": map[string]any{}},
-	}}
-	data, err := json.Marshal(record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(toolsDir, "call-1.json"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	result, err := NewRunner(Config{RootDir: root}).RunWithEnv(
-		context.Background(), "chain287-sre-inspection-report", "render_report",
-		map[string]string{"report_ref": invocationID},
-		map[string]string{"NETX_ARTIFACT_DIR": staging, "NETX_LOCAL_TRACE_DIR": traceRoot},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Output == nil || result.Output.Status != "error" || len(result.Artifacts) != 0 {
-		t.Fatalf("incomplete report result = %+v", result)
-	}
-	if !strings.Contains(result.Output.Message, "active_validators") || !strings.Contains(result.Output.Message, "validator_window_stats") {
-		t.Fatalf("missing action detail = %q", result.Output.Message)
 	}
 }
 

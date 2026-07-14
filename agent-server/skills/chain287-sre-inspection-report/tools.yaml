@@ -1,16 +1,16 @@
 version: "1"
 actions:
-  render_report:
-    description: Render a professional Chain287 SRE HTML inspection report exclusively from real upstream results in the current invocation trace. Requires report_ref; never uses sample or model-authored data.
+  run_inspection:
+    description: Run the complete Chain287 SRE inspection in one deterministic workflow, require all nine read-only checks to succeed, and generate the HTML report artifact.
     readonly: true
     approval: false
-    timeoutSeconds: 30
+    timeoutSeconds: 180
     command: python3
     args:
-      - scripts/render-report.py
-      - render_report
-      - ""
-      - ${report_ref}
+      - scripts/run-inspection.py
+      - ${sample}
+      - ${count}
+      - ${window_sec}
       - ${report_title}
       - ${report_scope}
       - ${report_notes}

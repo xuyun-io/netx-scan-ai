@@ -1,33 +1,14 @@
-#!/usr/bin/env python3
+"""Build the Chain287 inspection HTML document from validated check results."""
+
 import html
 import json
-import os
 import re
-import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-SKILL = "chain287-sre-inspection-report"
-
-
 def utc_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def emit(payload):
-    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-
-
-def error(code, detail):
-    emit({
-        "version": "1.0",
-        "status": "error",
-        "message": detail,
-        "error": {"code": code, "detail": detail},
-        "metadata": {"source": SKILL, "timestamp": utc_now()},
-    })
 
 
 def h(value):
@@ -36,70 +17,6 @@ def h(value):
 
 def read_template():
     return Path(__file__).resolve().parents[1].joinpath("assets", "report-template.html").read_text(encoding="utf-8")
-
-
-def parse_trace_payload(report_ref):
-    """Load upstream SkillOutputs from one locally persisted ADK invocation."""
-    trace_root = os.getenv("NETX_LOCAL_TRACE_DIR", "").strip()
-    report_ref = (report_ref or "").strip().replace("\\", "/")
-    if not trace_root or not report_ref:
-        return None
-
-    # Accept either the short traceRef or a rawResultRef from any tool result.
-    invocation_ref = report_ref.split("/", 1)[0]
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", invocation_ref):
-        raise ValueError("report_ref 格式无效")
-
-    root = Path(trace_root).resolve()
-    invocation_dir = (root / invocation_ref).resolve()
-    if root not in invocation_dir.parents:
-        raise ValueError("report_ref 超出本地 trace 目录")
-    tools_dir = invocation_dir / "tools"
-    if not tools_dir.is_dir():
-        raise FileNotFoundError(f"未找到 report_ref 对应的工具结果：{invocation_ref}")
-
-    allowed_skills = {"chain287-chain-query", "chain287-validator-health"}
-    collected = {}
-    for path in sorted(tools_dir.glob("*.json")):
-        record = json.loads(path.read_text(encoding="utf-8"))
-        response = record.get("response") or {}
-        if isinstance(response.get("result"), dict):
-            response = response["result"]
-        skill = response.get("skill")
-        action = response.get("action")
-        output = response.get("output")
-        if skill not in allowed_skills or not action or not isinstance(output, dict):
-            continue
-        collected[(skill, action)] = {
-            "skill": skill,
-            "action": action,
-            "output": output,
-        }
-
-    if not collected:
-        raise ValueError("report_ref 中没有可用于巡检报告的 SkillOutput")
-
-    action_order = [
-        ("chain287-chain-query", "rpc_snapshot"),
-        ("chain287-chain-query", "chain_health"),
-        ("chain287-chain-query", "recent_blocks"),
-        ("chain287-chain-query", "active_validators"),
-        ("chain287-validator-health", "validator_overview"),
-        ("chain287-validator-health", "validator_block_stats"),
-        ("chain287-validator-health", "validator_rewards"),
-        ("chain287-validator-health", "validator_jailed_status"),
-        ("chain287-validator-health", "validator_window_stats"),
-    ]
-
-    missing = [f"{skill}/{action}" for skill, action in action_order if (skill, action) not in collected]
-    if missing:
-        raise ValueError(
-            "巡检数据不完整，禁止生成部分报告。请先执行以下真实 action：" + ", ".join(missing)
-        )
-
-    ordered = [collected.pop(key) for key in action_order if key in collected]
-    ordered.extend(collected[key] for key in sorted(collected))
-    return ordered
 
 
 def unwrap_output(item):
@@ -601,7 +518,7 @@ def build_report(payload, title, scope, notes):
         action_items.insert(0, {
             "level": "warning",
             "title": "巡检数据不完整",
-            "description": f"以下上游检查未执行或输出缺失，导致报告缺少验证者、收益等数据：{', '.join(missing_names)}。请在调用 render_report 前先运行这些 skill action。",
+            "description": f"以下巡检数据缺失，无法形成完整报告：{', '.join(missing_names)}。请重新执行 run_inspection。",
         })
 
     report_data = {
@@ -652,58 +569,3 @@ def safe_filename(title):
         base = "chain287-sre-inspection-report"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return f"{base}-{stamp}.html"
-
-
-def main():
-    action = sys.argv[1] if len(sys.argv) > 1 else "render_report"
-    report_ref = sys.argv[3] if len(sys.argv) > 3 else ""
-    title = (sys.argv[4] if len(sys.argv) > 4 else "").strip() or "Chain287 区块链 SRE 巡检报告"
-    scope = (sys.argv[5] if len(sys.argv) > 5 else "").strip() or "Chain287 / RPC / Validator"
-    notes = (sys.argv[6] if len(sys.argv) > 6 else "").strip() or "本报告由 Agent Skill 根据只读巡检结果自动生成。"
-
-    if action == "render_report":
-        try:
-            payload = parse_trace_payload(report_ref)
-        except Exception as exc:
-            error("INVALID_REPORT_INPUT", f"无法读取巡检报告输入: {exc}")
-            return
-        if payload is None:
-            error("MISSING_REPORT_INPUT", "render_report 需要当前真实巡检 invocation 的 report_ref；不允许样板或手工数据")
-            return
-    else:
-        error("UNKNOWN_ACTION", f"unknown action: {action}")
-        return
-
-    staging = os.getenv("NETX_ARTIFACT_DIR", "").strip()
-    if not staging:
-        staging = tempfile.mkdtemp(prefix="chain287-sre-report-")
-    out_dir = Path(staging)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    html_doc, data = build_report(payload, title, scope, notes)
-    filename = safe_filename(title)
-    report_path = out_dir / filename
-    report_path.write_text(html_doc, encoding="utf-8")
-    size = report_path.stat().st_size
-
-    data["reportFile"] = filename
-    data["reportBytes"] = size
-    emit({
-        "version": "1.0",
-        "status": "ok" if data["criticalCount"] == 0 and data["warningCount"] == 0 and not data.get("dataGap") else "partial",
-        "message": f"已生成 Chain287 SRE HTML 巡检报告：{filename}",
-        "data": data,
-        "display": {"format": "html", "title": title},
-        "artifacts": [{
-            "ref": filename,
-            "name": filename,
-            "mimeType": "text/html",
-            "size": size,
-            "description": "Chain287 区块链 SRE HTML 巡检报告",
-        }],
-        "metadata": {"source": SKILL, "timestamp": data["generatedAt"]},
-    })
-
-
-if __name__ == "__main__":
-    main()

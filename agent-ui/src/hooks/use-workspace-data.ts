@@ -85,12 +85,14 @@ export function useWorkspaceData({
   const loadTaskDetail = useCallback(async (taskId: string) => {
     if (!agentSpaceName) return null;
 
-    const [detail, recordsResp] = await Promise.all([
+    const [detail, recordsResp, artifactPage] = await Promise.all([
       getTask(agentSpaceName, taskId),
       listRecords({ agentSpaceName, taskId, maxResults: 500 }),
+      listArtifacts(agentSpaceName),
     ]);
     const nextDetail = { task: detail.entity, records: recordsResp.records ?? [] };
     setTaskDetail(nextDetail);
+    setArtifacts(artifactPage.entities ?? []);
     setSelectedTaskId(detail.entity.taskId);
     return nextDetail;
   }, [agentSpaceName]);
@@ -197,25 +199,30 @@ export function useWorkspaceData({
     const load = async () => {
       if (!alive) return;
       try {
-        const [detail, recordsResp] = await Promise.all([
+        const [detail, recordsResp, artifactPage] = await Promise.all([
           getTask(agentSpaceName, viewingTaskId),
           listRecords({ agentSpaceName, taskId: viewingTaskId, maxResults: 500 }),
+          listArtifacts(agentSpaceName),
         ]);
-        if (!alive) return;
+        if (!alive) return false;
         setTaskDetail({ task: detail.entity, records: recordsResp.records ?? [] });
+        setArtifacts(artifactPage.entities ?? []);
         setSelectedTaskId(detail.entity.taskId);
-        if (isFinalTaskStatus(detail.entity.status) && timer) {
+        const finished = isFinalTaskStatus(detail.entity.status);
+        if (finished && timer) {
           clearInterval(timer);
           timer = undefined;
         }
+        return finished;
       } catch (err) {
         if (alive) onError?.((err as Error).message);
+        return false;
       }
     };
 
     const startPolling = async () => {
-      await load();
-      if (!alive) return;
+      const finished = await load();
+      if (!alive || finished) return;
       timer = window.setInterval(load, 2000);
     };
 
